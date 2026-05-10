@@ -126,7 +126,7 @@ func (db *DB) Search(ctx context.Context, query string, limit int) ([]Page, erro
 		FROM pages_fts
 		JOIN pages p ON p.rowid = pages_fts.rowid
 		WHERE pages_fts MATCH ?
-		ORDER BY bm25(pages_fts)
+		ORDER BY bm25(pages_fts, 10.0, 5.0, 1.0)
 		LIMIT ?
 	`, query, limit)
 	if err != nil {
