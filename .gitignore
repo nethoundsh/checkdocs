@@ -1,0 +1,28 @@
+# binaries
+/server
+/scraper
+/bin/
+
+# data
+/data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# env
+.env
+.env.local
+.envrc
+
+# editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# go
+*.test
+*.out
+coverage.html
