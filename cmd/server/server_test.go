@@ -79,7 +79,7 @@ func TestWriteSSE(t *testing.T) {
 // TestChatHandlerValidation checks all early-return error paths that fire
 // before the agent is ever created — no OpenRouter call is made.
 func TestChatHandlerValidation(t *testing.T) {
-	handler := chatHandler(openTestDB(t), defaultModel, newSessionStore(), silentLog())
+	handler := chatHandler(openTestDB(t), defaultModel, newSessionStore(), nil, silentLog())
 
 	post := func(t *testing.T, body string, extraHeaders map[string]string) *httptest.ResponseRecorder {
 		t.Helper()

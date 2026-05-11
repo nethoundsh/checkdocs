@@ -12,6 +12,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
+	"github.com/nethoundsh/checkdocs/internal/brave"
 	"github.com/nethoundsh/checkdocs/internal/index"
 	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
@@ -53,7 +54,12 @@ func main() {
 		vc = vulncheck.NewClient(vcToken)
 	}
 
-	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, log)
+	var br *brave.Client
+	if braveKey := os.Getenv("BRAVE_API_KEY"); braveKey != "" {
+		br = brave.NewClient(braveKey)
+	}
+
+	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, br, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

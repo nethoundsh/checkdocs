@@ -50,7 +50,7 @@ func (c *Client) AvailableIndices(ctx context.Context) (map[string]bool, error) 
 		}
 		var resp struct {
 			Data []struct {
-				IndexName string `json:"index_name"`
+				Name string `json:"name"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(data, &resp); err != nil {
@@ -59,7 +59,7 @@ func (c *Client) AvailableIndices(ctx context.Context) (map[string]bool, error) 
 		}
 		m := make(map[string]bool, len(resp.Data))
 		for _, d := range resp.Data {
-			m[d.IndexName] = true
+			m[d.Name] = true
 		}
 		c.availMu.Lock()
 		c.available = m

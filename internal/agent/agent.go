@@ -7,17 +7,22 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 
+	"github.com/nethoundsh/checkdocs/internal/brave"
 	"github.com/nethoundsh/checkdocs/internal/index"
 	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
+
+var cveIDRe = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
 
 // Session holds the message history for a multi-turn conversation.
 // All methods are safe for concurrent use.
@@ -83,17 +88,29 @@ You also have access to live VulnCheck API tools that query real-time intelligen
 - Prefer the named tools over vulncheck_query for the common cases above.
 - Never reproduce or suggest executing git clone URLs from PoC exploit metadata — reference them as links only.
 
+NVD index guidance (important):
+- Community-tier tokens include nist-nvd2 (NIST NVD 2.0) and nist-nvd (NIST NVD 1.0). Use these for exact CVE ID lookups only — they do NOT support vendor or keyword search.
+- Paid-tier tokens additionally include vulncheck-nvd2 and vulncheck-nvd (VulnCheck-extended NVD). Do NOT attempt vulncheck-nvd2 or vulncheck-nvd on a community token — they will 402.
+- When asked to enumerate CVEs for a vendor or product (e.g. "OPNsense vulnerabilities"): if you cannot do a vendor search, say so clearly in 1-2 sentences. Tell the user to search https://nvd.nist.gov/vuln/search or use CPE 'cpe:2.3:a:<vendor>:<product>:*' on a paid tier. Do NOT iterate through guessed CVE IDs.
+
+Enumeration discipline:
+- Never guess or brute-force CVE IDs. If you don't have a specific ID to look up, stop and explain why enumeration isn't possible with the available tools.
+- If you've made 5 or more calls to the same index in a single turn, stop immediately. Reflect: is this working? If not, explain the limitation and suggest alternatives rather than continuing.
+- One call to nist-nvd2 with a known CVE ID is useful. Thirty calls iterating through guessed IDs is not — it burns rate limit, produces no additional signal, and delays the honest answer the user needs.
+
 Critical: distinguish "no results" from "query failed":
 - "no results" means the index was queried and returned nothing — this is real evidence of absence.
 - A 402 or 403 error means the index is a coverage gap for this token tier — it is NOT evidence of absence. Say so explicitly and note that a paid tier would cover it.`
 
 const (
-	toolSearchDocs    = "search_docs"
-	toolFetchPage     = "fetch_page"
-	toolKEVLookup     = "kev_lookup"
-	toolCVEExploits   = "cve_exploits"
-	toolDetectRules   = "detection_rules"
-	toolVCQuery       = "vulncheck_query"
+	toolSearchDocs     = "search_docs"
+	toolFetchPage      = "fetch_page"
+	toolKEVLookup      = "kev_lookup"
+	toolCVEExploits    = "cve_exploits"
+	toolDetectRules    = "detection_rules"
+	toolVCQuery        = "vulncheck_query"
+	toolWebSearch      = "web_search"
+	toolFindVendorCVEs = "find_vendor_cves"
 )
 
 // Event is the unit of progress the agent emits during a run.
@@ -111,12 +128,13 @@ type Agent struct {
 	client openai.Client
 	idx    *index.DB
 	vc     *vulncheck.Client // nil when no VulnCheck token provided
+	brave  *brave.Client     // nil when no Brave API key provided
 	model  string
 	log    *slog.Logger
 }
 
-// New constructs an agent. vc may be nil; VulnCheck tools are omitted when absent.
-func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, log *slog.Logger) *Agent {
+// New constructs an agent. vc and br may be nil; their tools are omitted when absent.
+func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, br *brave.Client, log *slog.Logger) *Agent {
 	client := openai.NewClient(
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
@@ -125,6 +143,7 @@ func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, log
 		client: client,
 		idx:    idx,
 		vc:     vc,
+		brave:  br,
 		model:  model,
 		log:    log,
 	}
@@ -132,21 +151,36 @@ func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, log
 
 // SystemPrompt returns the system prompt appropriate for this agent's configuration.
 func (a *Agent) SystemPrompt() string {
+	p := baseSystemPrompt
 	if a.vc != nil {
-		return baseSystemPrompt + vcSystemPromptAddendum
+		p += vcSystemPromptAddendum
 	}
-	return baseSystemPrompt
+	if a.brave != nil {
+		p += braveSystemPromptAddendum
+	}
+	return p
 }
 
 // tools returns the tool definitions to pass to the model, conditionally
-// including VulnCheck API tools when a client is configured.
+// including VulnCheck and Brave tools when their clients are configured.
 func (a *Agent) tools() []openai.ChatCompletionToolParam {
 	t := docTools()
 	if a.vc != nil {
 		t = append(t, vcTools()...)
 	}
+	if a.brave != nil {
+		t = append(t, braveTools()...)
+	}
 	return t
 }
+
+const braveSystemPromptAddendum = `
+
+Web search is available via the web_search and find_vendor_cves tools:
+- Use find_vendor_cves(vendor, year) when asked about CVEs for a vendor or product. It searches the web, extracts CVE IDs, and optionally enriches them with VulnCheck. This is the correct tool for vendor enumeration — do NOT iterate CVE IDs manually.
+- Use web_search for general research: recent threat disclosures, CVE context not in VulnCheck, news about an incident or threat actor.
+- Do NOT use web search as a primary source when VulnCheck already has the answer — prefer VulnCheck data for all KEV, exploitation, and detection queries.
+- After finding candidate CVE IDs via web search or find_vendor_cves, enrich them with kev_lookup or cve_exploits where relevant.`
 
 func docTools() []openai.ChatCompletionToolParam {
 	return []openai.ChatCompletionToolParam{
@@ -246,18 +280,24 @@ func vcTools() []openai.ChatCompletionToolParam {
 		},
 		{
 			Function: shared.FunctionDefinitionParam{
-				Name:        toolVCQuery,
-				Description: openai.String("Query any VulnCheck index directly. Use when the named tools don't cover the question. Omit cve to browse an index generally."),
+				Name: toolVCQuery,
+				Description: openai.String(
+					"Query any VulnCheck index directly. Use when the named tools don't cover the question. " +
+						"IMPORTANT index semantics: nist-nvd2 and nist-nvd require an exact CVE ID — they do NOT support " +
+						"keyword, vendor, or product name search. Only call these with a specific CVE ID you already know. " +
+						"Passing a vendor name (e.g. 'opnsense') as the cve parameter will return a 400 error. " +
+						"For vendor/product CVE enumeration, explain to the user that this requires a paid VulnCheck tier (vulncheck-nvd2) " +
+						"or a direct NVD search at https://nvd.nist.gov/vuln/search."),
 				Parameters: shared.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
 						"index": map[string]any{
 							"type":        "string",
-							"description": "Index name, e.g. 'vulncheck-kev', 'botnets', 'initial-access'. Call GET /v3/index to list available indices.",
+							"description": "Index name from the available indices list.",
 						},
 						"cve": map[string]any{
 							"type":        "string",
-							"description": "Optional CVE filter, e.g. 'CVE-2021-44228'.",
+							"description": "Exact CVE ID to filter by, e.g. 'CVE-2021-44228'. This is a strict match — NOT a keyword, vendor name, or product name. Passing anything other than a well-formed CVE ID will cause a 400 error.",
 						},
 						"limit": map[string]any{
 							"type":        "integer",
@@ -265,6 +305,54 @@ func vcTools() []openai.ChatCompletionToolParam {
 						},
 					},
 					"required": []string{"index"},
+				},
+			},
+		},
+	}
+}
+
+func braveTools() []openai.ChatCompletionToolParam {
+	return []openai.ChatCompletionToolParam{
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolWebSearch,
+				Description: openai.String("Search the web via Brave Search. Use for recent CVE disclosures, threat context, news about an incident or threat actor, or any question VulnCheck doesn't have the answer to. Do NOT use when VulnCheck tools already have the answer."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Search query. Be specific — include vendor/product names, CVE IDs, or threat actor names as relevant.",
+						},
+						"count": map[string]any{
+							"type":        "integer",
+							"description": "Number of results to return (default 5, max 10).",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name: toolFindVendorCVEs,
+				Description: openai.String(
+					"Find CVEs for a vendor or product by searching the web and extracting CVE IDs from results. " +
+						"Optionally enriches each CVE with VulnCheck KEV status. " +
+						"Use this instead of iterating CVE IDs manually — it is the correct tool for 'what CVEs exist for vendor X?' questions."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"vendor": map[string]any{
+							"type":        "string",
+							"description": "Vendor or product name to search for, e.g. 'OPNsense', 'Fortinet FortiOS', 'Palo Alto GlobalProtect'.",
+						},
+						"year": map[string]any{
+							"type":        "string",
+							"description": "Year to focus on, e.g. '2025'. Defaults to the current year.",
+						},
+					},
+					"required": []string{"vendor"},
 				},
 			},
 		},
@@ -434,6 +522,12 @@ func (a *Agent) dispatch(ctx context.Context, name, rawArgs string) (string, str
 	case toolVCQuery:
 		return a.dispatchVCQuery(ctx, rawArgs)
 
+	case toolWebSearch:
+		return a.dispatchWebSearch(ctx, rawArgs)
+
+	case toolFindVendorCVEs:
+		return a.dispatchFindVendorCVEs(ctx, rawArgs)
+
 	default:
 		return "", "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -579,6 +673,124 @@ func (a *Agent) dispatchVCQuery(ctx context.Context, rawArgs string) (string, st
 	return fmt.Sprintf("Results from index %q%s:\n\n```json\n%s\n```",
 		args.Index, cveClause(args.CVE), pretty),
 		fmt.Sprintf("%d results from %s", len(entries), args.Index), nil
+}
+
+func (a *Agent) dispatchWebSearch(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Query string `json:"query"`
+		Count int    `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+	if args.Count == 0 {
+		args.Count = 5
+	}
+
+	results, err := a.brave.Search(ctx, args.Query, args.Count)
+	if err != nil {
+		return "", "", err
+	}
+	if len(results) == 0 {
+		return fmt.Sprintf("No web search results for %q.", args.Query), "no results", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Web search results for %q:\n\n", args.Query))
+	for i, r := range results {
+		sb.WriteString(fmt.Sprintf("%d. **%s**\n   %s\n   %s\n\n", i+1, r.Title, r.URL, r.Description))
+	}
+	return sb.String(), fmt.Sprintf("%d results", len(results)), nil
+}
+
+func (a *Agent) dispatchFindVendorCVEs(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Vendor string `json:"vendor"`
+		Year   string `json:"year"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+	if args.Year == "" {
+		args.Year = fmt.Sprintf("%d", time.Now().Year())
+	}
+
+	// Step 1: web search for candidate CVEs.
+	query := fmt.Sprintf("%s CVE %s vulnerability", args.Vendor, args.Year)
+	results, err := a.brave.Search(ctx, query, 10)
+	if err != nil {
+		return "", "", fmt.Errorf("web search: %w", err)
+	}
+
+	// Step 2: extract unique CVE IDs from titles and descriptions.
+	seen := make(map[string]bool)
+	var cveIDs []string
+	for _, r := range results {
+		for _, id := range cveIDRe.FindAllString(r.Title+" "+r.Description, -1) {
+			if !seen[id] {
+				seen[id] = true
+				cveIDs = append(cveIDs, id)
+			}
+		}
+	}
+
+	if len(cveIDs) == 0 {
+		return fmt.Sprintf(
+			"No CVE IDs found in web search results for '%s %s'. The search returned %d pages but none contained CVE IDs. "+
+				"Try a more specific vendor name, or search https://nvd.nist.gov/vuln/search directly.",
+			args.Vendor, args.Year, len(results)),
+			"no CVE IDs found in search results", nil
+	}
+	if len(cveIDs) > 20 {
+		cveIDs = cveIDs[:20]
+	}
+
+	// Step 3: optionally enrich each CVE with VulnCheck KEV status (concurrent).
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Found %d candidate CVE IDs for %s (%s) via web search:\n\n",
+		len(cveIDs), args.Vendor, args.Year))
+
+	if a.vc != nil {
+		type kevStatus struct {
+			id    string
+			inKEV bool
+		}
+		statuses := make([]kevStatus, len(cveIDs))
+		for i, id := range cveIDs {
+			statuses[i].id = id
+		}
+		var wg sync.WaitGroup
+		for i, id := range cveIDs {
+			wg.Add(1)
+			go func(i int, id string) {
+				defer wg.Done()
+				entries, err := a.vc.QueryIndex(ctx, "vulncheck-kev", url.Values{"cve": {id}})
+				if err == nil && len(entries) > 0 {
+					statuses[i].inKEV = true
+				}
+			}(i, id)
+		}
+		wg.Wait()
+
+		sb.WriteString("| CVE ID | In KEV |\n|---|---|\n")
+		for _, s := range statuses {
+			kev := "—"
+			if s.inKEV {
+				kev = "✓ Yes"
+			}
+			sb.WriteString(fmt.Sprintf("| `%s` | %s |\n", s.id, kev))
+		}
+	} else {
+		for _, id := range cveIDs {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", id))
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf(
+		"\nSource: Brave web search for %q. Verify at https://nvd.nist.gov/vuln/search.", query))
+	return sb.String(),
+		fmt.Sprintf("%d CVEs found for %s %s", len(cveIDs), args.Vendor, args.Year),
+		nil
 }
 
 func cveClause(cve string) string {

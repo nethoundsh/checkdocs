@@ -2,7 +2,7 @@
 
 > Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation and live intelligence API — a BM25-indexed, locally-served assistant built in Go.
 
-Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live intelligence queries.
+Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
 
 ---
 
@@ -20,6 +20,15 @@ With a VulnCheck API token, the agent gains four additional live-data tools that
 | `vulncheck_query` | Escape hatch — query any index by name with arbitrary parameters |
 
 Without a VulnCheck token the tool surface is docs-only; the live tools are silently omitted from the agent's tool list.
+
+With a Brave Search API key, the agent gains two additional tools:
+
+| Tool | What it does |
+|---|---|
+| `web_search` | General web search — recent CVE disclosures, threat context, news about a CVE or threat actor |
+| `find_vendor_cves` | Composite: searches the web for `{vendor} CVE {year}`, extracts CVE IDs from results, and enriches each with VulnCheck KEV status (if a VulnCheck token is also present) |
+
+`find_vendor_cves` is the correct tool for "are there any OPNsense vulnerabilities?" style questions — it replaces the brute-force CVE ID enumeration pattern that a model without web access would otherwise attempt.
 
 Two interfaces ship: a **CLI** for quick lookups from the terminal and an **HTTP server** with a browser-based chat UI for longer research sessions.
 
@@ -93,6 +102,15 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 │               • tier-aware index discovery                 │ │
 │               └──────────────────────────────────────────►─┤ │
 │                              api.vulncheck.com/v3/         │ │
+│                                                              │
+│  Web search tools (when BRAVE_API_KEY present):              │
+│    web_search        find_vendor_cves                        │
+│          │                                                   │
+│          └── internal/brave  ──────────────────────────────┐ │
+│               find_vendor_cves: search → extract CVE IDs   │ │
+│               → concurrent KEV enrichment (if vc present)  │ │
+│               └──────────────────────────────────────────►─┤ │
+│                              api.search.brave.com          │ │
 │  Loop:  system prompt → user question → [tool call →        │
 │         tool result]* → streamed answer  (max 16 iterations)│
 │                                                              │
@@ -155,6 +173,12 @@ Four live-data tools extend the agent when a VulnCheck API token is present. The
 
 The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages ("not available on your tier") rather than silent empty results, so the model can explain the limitation rather than hallucinating data.
 
+### 6. Brave Search — web fallback and vendor CVE enumeration
+
+When `BRAVE_API_KEY` is set, the agent gains `web_search` and the composite `find_vendor_cves` tool. The composite tool codifies a three-step workflow that the model would otherwise attempt manually (and badly): (1) Brave search for `{vendor} CVE {year}`, (2) regex extraction of CVE IDs from result titles and descriptions, (3) concurrent KEV enrichment for each extracted ID via VulnCheck if a token is present. The result is a table of candidate CVEs with their KEV status — typically from one tool call rather than 30+.
+
+Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYOK. This is intentional: it is a shared search quota, not a user-provided credential. Brave's pricing is credit-based at $5/1,000 requests, with $5 free monthly credit (attribution required) — roughly 1,000 free queries/month. Cache responses where possible if query volume is a concern; Tavily and Serper are viable alternatives with different pricing models.
+
 ---
 
 ## Prerequisites
@@ -162,6 +186,7 @@ The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` 
 - **Go 1.21+** (the module targets `go 1.26.3` — any recent toolchain works)
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
 - An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
+- An optional **[Brave Search](https://api-dashboard.search.brave.com/) API key** — enables `web_search` and `find_vendor_cves`; pricing is credit-based ($5/1,000 requests), with $5 free monthly credit if you attribute Brave Search on your project
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
 - The web UI fetches two CDN assets at runtime: Inter from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
 
@@ -217,6 +242,7 @@ Flags:
 Environment:
   OPENROUTER_API_KEY     required; loaded from .env if present
   VULNCHECK_API_TOKEN    optional; enables live VulnCheck API tools; loaded from .env if present
+  BRAVE_API_KEY          optional; enables web_search and find_vendor_cves; loaded from .env if present
 ```
 
 The CLI renders tool activity in color to stderr (cyan for calls, green for results) and streams the final answer to stdout — pipe-friendly.
@@ -240,6 +266,9 @@ Flags:
   -addr    listen address (default: :8080)
   -db      path to SQLite database (default: data/docs.db)
   -model   default OpenRouter model (default: anthropic/claude-sonnet-4.5)
+
+Environment:
+  BRAVE_API_KEY   optional; server-side (shared across all users); enables web_search and find_vendor_cves
 ```
 
 ### API
@@ -333,6 +362,7 @@ checkdocs/
 │       └── web/      # index.html (embedded at build time)
 ├── internal/
 │   ├── agent/        # Tool-using LLM loop, event types
+│   ├── brave/        # Brave Web Search API client
 │   ├── index/        # SQLite open/migrate/search/upsert
 │   └── vulncheck/    # VulnCheck v3 API client, response cache, retry
 ├── data/             # docs.db lives here (gitignored)
@@ -346,6 +376,7 @@ checkdocs/
 - [x] Adapt UI to VulnCheck brand colors and visual identity
 - [x] Multi-turn conversation memory with 30-minute session TTL and "New chat" reset
 - [x] Live VulnCheck API tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`)
+- [x] Brave Search integration (`web_search`, `find_vendor_cves` composite with concurrent KEV enrichment)
 - [x] Test suite for the index, scraper, and server layers
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)

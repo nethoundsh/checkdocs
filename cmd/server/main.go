@@ -22,6 +22,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
+	"github.com/nethoundsh/checkdocs/internal/brave"
 	"github.com/nethoundsh/checkdocs/internal/index"
 	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
@@ -107,8 +108,14 @@ func main() {
 	}
 	mux.Handle("/", http.FileServer(http.FS(uiFS)))
 
+	var br *brave.Client
+	if braveKey := os.Getenv("BRAVE_API_KEY"); braveKey != "" {
+		br = brave.NewClient(braveKey)
+		log.Info("brave search enabled")
+	}
+
 	store := newSessionStore()
-	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, log))
+	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, br, log))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -143,7 +150,7 @@ type chatRequest struct {
 }
 
 // chatHandler streams the agent's events as Server-Sent Events.
-func chatHandler(db *index.DB, defaultModel string, store *sessionStore, log *slog.Logger) http.HandlerFunc {
+func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *brave.Client, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// BYOK: the user's key arrives as a header. Never log it.
 		apiKey := strings.TrimSpace(r.Header.Get("X-OpenRouter-Key"))
@@ -197,7 +204,7 @@ func chatHandler(db *index.DB, defaultModel string, store *sessionStore, log *sl
 			vc = vulncheck.NewClient(vcToken)
 		}
 
-		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, log)
+		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, br, log)
 
 		events := make(chan agent.Event, 16)
 		go ag.Run(r.Context(), sess, req.Question, events)
