@@ -5,6 +5,9 @@
 
 # data
 /data/
+
+# vulnerability-research notebooks (clone separately per README)
+/research/
 *.db
 *.db-journal
 *.db-shm
