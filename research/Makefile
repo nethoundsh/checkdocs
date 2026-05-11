@@ -1,0 +1,28 @@
+.PHONY: deps
+deps:
+	uv sync
+
+.PHONY: refresh
+refresh:
+	uv run jupyter nbconvert --to notebook --inplace --execute exploitation-timelines/exploitation-timeline.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute known-exploited-vulnerabilities/2024-dashboard.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute known-exploited-vulnerabilities/2025-dashboard.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute known-exploited-vulnerabilities/2026-dashboard.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute nist-nvd/nist-nvd.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute reserved-cves/reserved-but-exploited.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute reserved-cves/reserved-by-reference-count.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute initial-access/initial-access.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute trending/trending.ipynb
+	uv run jupyter nbconvert --to notebook --inplace --execute canary-intelligence/canary-kev.ipynb
+
+.PHONY: build
+build: clean
+	uv run jupyter-book build --html
+
+.PHONY: dev
+dev: deps
+	uv run jupyter-book start
+
+.PHONY: clean
+clean:
+	uv run jupyter-book clean

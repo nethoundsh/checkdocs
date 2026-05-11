@@ -150,6 +150,51 @@ func (db *DB) Search(ctx context.Context, query string, limit int) ([]Page, erro
 	return out, rows.Err()
 }
 
+// HasResearch reports whether the database contains any research:// pages.
+// Used at startup to decide whether to include the search_research tool.
+func (db *DB) HasResearch(ctx context.Context) bool {
+	var n int
+	_ = db.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM pages WHERE url LIKE 'research://%' LIMIT 1`,
+	).Scan(&n)
+	return n > 0
+}
+
+// SearchResearch is like Search but restricts results to pages whose URL begins
+// with "research://", i.e. content ingested from Jupyter notebooks.
+func (db *DB) SearchResearch(ctx context.Context, query string, limit int) ([]Page, error) {
+	if limit <= 0 || limit > 20 {
+		limit = 5
+	}
+	safe := sanitizeFTSQuery(query)
+	if safe == "" {
+		return nil, nil
+	}
+	rows, err := db.conn.QueryContext(ctx, `
+		SELECT p.url, p.title, p.breadcrumb,
+		       snippet(pages_fts, 2, '<b>', '</b>', '…', 20) AS snip
+		FROM pages_fts
+		JOIN pages p ON p.rowid = pages_fts.rowid
+		WHERE pages_fts MATCH ?
+		  AND p.url LIKE 'research://%'
+		ORDER BY bm25(pages_fts, 10.0, 5.0, 1.0)
+		LIMIT ?
+	`, safe, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Page
+	for rows.Next() {
+		var p Page
+		if err := rows.Scan(&p.URL, &p.Title, &p.Breadcrumb, &p.Snippet); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 // sanitizeFTSQuery escapes FTS5 query syntax. Each whitespace-separated token
 // is wrapped in double quotes (with internal quotes doubled per FTS5 rules)
 // so characters like '-', ':', '(', ')', and operator keywords are treated

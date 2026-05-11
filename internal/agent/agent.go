@@ -68,7 +68,8 @@ Efficiency rules (you have a limited number of turns):
 - For broad questions, aim for 2 search turns + 3-5 fetches + 1 answer turn. Do not exceed this.
 
 Answer rules:
-- Cite every factual claim with the page URL it came from, in markdown link form: [Title](URL).
+- Cite every factual claim inline, immediately after the claim, as a markdown link: [Source Title](URL).
+- When a section draws from multiple sources, each sentence or clause that asserts a fact gets its own inline citation — do not collect all sources into a table at the end. Example: "The vulnerability was patched in version 25.1.8 ([OPNsense advisory](https://...)), and CISA rates it 8.8 High ([NVD entry](https://...))."
 - Use descriptive link text, not bare URLs: write [Meta's security advisory](https://...) not https://...
 - If the docs don't cover something, say so plainly. Do not guess or fall back on general knowledge.
 - When multiple pages share a title (e.g., several "Introduction" pages), disambiguate by breadcrumb or URL.
@@ -87,11 +88,16 @@ You also have access to live VulnCheck API tools that query real-time intelligen
 - Use vulncheck_query as an escape hatch for any other index query — only for indices listed as available below.
 - Prefer the named tools over vulncheck_query for the common cases above.
 - Never reproduce or suggest executing git clone URLs from PoC exploit metadata — reference them as links only.
+- When cve_exploits returns xdb results, use the maturity level to characterize exploitation risk: "poc" = lab reproduction (lower operational risk), "weaponized" = polished exploit module (higher operational risk). Always state which category applies rather than just noting "PoC available."
 
 NVD index guidance (important):
 - Community-tier tokens include nist-nvd2 (NIST NVD 2.0) and nist-nvd (NIST NVD 1.0). Use these for exact CVE ID lookups only — they do NOT support vendor or keyword search.
 - Paid-tier tokens additionally include vulncheck-nvd2 and vulncheck-nvd (VulnCheck-extended NVD). Do NOT attempt vulncheck-nvd2 or vulncheck-nvd on a community token — they will 402.
 - When asked to enumerate CVEs for a vendor or product (e.g. "OPNsense vulnerabilities"): if you cannot do a vendor search, say so clearly in 1-2 sentences. Tell the user to search https://nvd.nist.gov/vuln/search or use CPE 'cpe:2.3:a:<vendor>:<product>:*' on a paid tier. Do NOT iterate through guessed CVE IDs.
+
+Interpreting NVD CPE records accurately:
+- NVD CPE entries often set versionEndExcluding without a lower bound (versionStartIncluding). This means "NVD did not enumerate a lower bound" — NOT "the bug has existed since version 1.0." Do not infer a long vulnerability window from the absence of a lower bound. State only what the record actually says: "versions before X.Y.Z are affected per NVD."
+- Similarly, a versionStartIncluding of an ancient version does not mean the bug was introduced then — it may just be the earliest version the reporter tested. Attribute CPE bounds to their source and do not over-interpret them.
 
 Enumeration discipline:
 - Never guess or brute-force CVE IDs. If you don't have a specific ID to look up, stop and explain why enumeration isn't possible with the available tools.
@@ -100,7 +106,8 @@ Enumeration discipline:
 
 Critical: distinguish "no results" from "query failed":
 - "no results" means the index was queried and returned nothing — this is real evidence of absence.
-- A 402 or 403 error means the index is a coverage gap for this token tier — it is NOT evidence of absence. Say so explicitly and note that a paid tier would cover it.`
+- A 402 or 403 error means the index is a coverage gap for this token tier — it is NOT evidence of absence. Always say so explicitly: "this is a coverage gap for the current token tier, not confirmation that no data exists. A paid tier would cover this index."
+- Never present a tier gate as a negative finding. The absence of a detection rule due to a 402 is not the same as "no detection rule exists."`
 
 const (
 	toolSearchDocs     = "search_docs"
@@ -111,6 +118,7 @@ const (
 	toolVCQuery        = "vulncheck_query"
 	toolWebSearch      = "web_search"
 	toolFindVendorCVEs = "find_vendor_cves"
+	toolSearchResearch = "search_research"
 )
 
 // Event is the unit of progress the agent emits during a run.
@@ -125,35 +133,42 @@ type Event struct {
 
 // Agent runs a single conversation against an OpenAI-compatible endpoint.
 type Agent struct {
-	client openai.Client
-	idx    *index.DB
-	vc     *vulncheck.Client // nil when no VulnCheck token provided
-	brave  *brave.Client     // nil when no Brave API key provided
-	model  string
-	log    *slog.Logger
+	client      openai.Client
+	idx         *index.DB
+	vc          *vulncheck.Client // nil when no VulnCheck token provided
+	brave       *brave.Client     // nil when no Brave API key provided
+	hasResearch bool              // true when research:// pages are in the index
+	model       string
+	log         *slog.Logger
 }
 
 // New constructs an agent. vc and br may be nil; their tools are omitted when absent.
-func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, br *brave.Client, log *slog.Logger) *Agent {
+// hasResearch should be true when research:// pages have been synced into the DB.
+func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, br *brave.Client, hasResearch bool, log *slog.Logger) *Agent {
 	client := openai.NewClient(
 		option.WithAPIKey(apiKey),
 		option.WithBaseURL(baseURL),
 	)
 	return &Agent{
-		client: client,
-		idx:    idx,
-		vc:     vc,
-		brave:  br,
-		model:  model,
-		log:    log,
+		client:      client,
+		idx:         idx,
+		vc:          vc,
+		brave:       br,
+		hasResearch: hasResearch,
+		model:       model,
+		log:         log,
 	}
 }
 
 // SystemPrompt returns the system prompt appropriate for this agent's configuration.
-func (a *Agent) SystemPrompt() string {
+// hasResearch should be true when research:// pages have been indexed in the DB.
+func (a *Agent) SystemPrompt(hasResearch bool) string {
 	p := baseSystemPrompt
 	if a.vc != nil {
 		p += vcSystemPromptAddendum
+	}
+	if hasResearch {
+		p += researchSystemPromptAddendum
 	}
 	if a.brave != nil {
 		p += braveSystemPromptAddendum
@@ -162,17 +177,35 @@ func (a *Agent) SystemPrompt() string {
 }
 
 // tools returns the tool definitions to pass to the model, conditionally
-// including VulnCheck and Brave tools when their clients are configured.
+// including VulnCheck, research, and Brave tools when available.
 func (a *Agent) tools() []openai.ChatCompletionToolParam {
 	t := docTools()
 	if a.vc != nil {
 		t = append(t, vcTools()...)
+	}
+	if a.hasResearch {
+		t = append(t, researchTools()...)
 	}
 	if a.brave != nil {
 		t = append(t, braveTools()...)
 	}
 	return t
 }
+
+const researchSystemPromptAddendum = `
+
+You also have access to a research corpus: VulnCheck's vulnerability-research Jupyter notebooks, ingested and indexed as searchable pages. These notebooks contain:
+- Trend analysis (trending CVEs, exploitation timelines)
+- Dashboard data (KEV stats by year, vendor/product breakdowns)
+- Intelligence reports (initial access, ransomware, canary detections, IP intelligence)
+- Reserved CVE analysis (reserved-but-exploited, reserved-by-reference-count)
+
+Use search_research when asked about:
+- Statistics or trends (e.g. "how many CVEs are in KEV?", "what vendors have the most exploited CVEs?")
+- Intelligence summaries that go beyond single CVE lookups
+- Questions about VulnCheck's own analysis and research
+
+After search_research returns snippets, use fetch_page with the research:// URL to get the full content.`
 
 const braveSystemPromptAddendum = `
 
@@ -244,7 +277,7 @@ func vcTools() []openai.ChatCompletionToolParam {
 		{
 			Function: shared.FunctionDefinitionParam{
 				Name:        toolCVEExploits,
-				Description: openai.String("Retrieve exploit intelligence for a CVE across all available indices (initial-access, botnets, ransomware, threat-actors). Only queries indices the token has access to. Queries run concurrently for speed."),
+				Description: openai.String("Retrieve exploit intelligence for a CVE across all available indices: xdb (community-tier PoC metadata with maturity level), initial-access, botnets, ransomware, threat-actors (paid tier). Only queries indices the token has access to. Use this to distinguish lab PoCs from weaponized exploit modules. Queries run concurrently."),
 				Parameters: shared.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -359,6 +392,35 @@ func braveTools() []openai.ChatCompletionToolParam {
 	}
 }
 
+func researchTools() []openai.ChatCompletionToolParam {
+	return []openai.ChatCompletionToolParam{
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name: toolSearchResearch,
+				Description: openai.String(
+					"Full-text search over VulnCheck's vulnerability-research notebooks. " +
+						"Use for questions about trends, statistics, dashboard data, and intelligence summaries " +
+						"(e.g. 'how many CVEs in KEV?', 'top vendors in initial-access', 'ransomware CVE trends'). " +
+						"Returns matching notebook sections with snippets. Follow with fetch_page to get full content."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"query": map[string]any{
+							"type":        "string",
+							"description": "Keywords to search for, e.g. 'KEV vendor coverage 2025' or 'canary exploitation detection'.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Max results (default 5, max 10).",
+						},
+					},
+					"required": []string{"query"},
+				},
+			},
+		},
+	}
+}
+
 // Run executes the agent loop for one user turn, appending to sess and
 // committing the updated history on success. Closes out when done.
 func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out chan<- Event) {
@@ -368,7 +430,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 	// If the session was created before a VulnCheck token was added, patch it.
 	messages := sess.snapshot()
 	if len(messages) > 0 {
-		prompt := a.SystemPrompt()
+		prompt := a.SystemPrompt(a.hasResearch)
 		// Inject available indices up-front so the model knows what it can
 		// query before making tool calls, avoiding reactive 402 discovery.
 		if a.vc != nil {
@@ -528,6 +590,9 @@ func (a *Agent) dispatch(ctx context.Context, name, rawArgs string) (string, str
 	case toolFindVendorCVEs:
 		return a.dispatchFindVendorCVEs(ctx, rawArgs)
 
+	case toolSearchResearch:
+		return a.dispatchSearchResearch(ctx, rawArgs)
+
 	default:
 		return "", "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -565,7 +630,11 @@ func (a *Agent) dispatchCVEExploits(ctx context.Context, rawArgs string) (string
 		return "", "", fmt.Errorf("parse args: %w", err)
 	}
 
-	indices := []string{"initial-access", "botnets", "ransomware", "threat-actors"}
+	// xdb is VulnCheck's community-tier exploit database — structured PoC metadata
+	// including maturity level (poc/weaponized), tags, and dates. Querying it here
+	// gives the agent characterization data (lab PoC vs weaponized module) alongside
+	// the paid-tier operational intel indices.
+	indices := []string{"initial-access", "botnets", "ransomware", "threat-actors", "xdb"}
 	params := url.Values{"cve": {args.CVEID}, "limit": {"5"}}
 
 	type indexResult struct {
@@ -791,6 +860,24 @@ func (a *Agent) dispatchFindVendorCVEs(ctx context.Context, rawArgs string) (str
 	return sb.String(),
 		fmt.Sprintf("%d CVEs found for %s %s", len(cveIDs), args.Vendor, args.Year),
 		nil
+}
+
+func (a *Agent) dispatchSearchResearch(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+	if args.Limit == 0 {
+		args.Limit = 5
+	}
+	pages, err := a.idx.SearchResearch(ctx, args.Query, args.Limit)
+	if err != nil {
+		return "", "", fmt.Errorf("search research: %w", err)
+	}
+	return formatSearchResult(args.Query, pages), fmt.Sprintf("%d research pages", len(pages)), nil
 }
 
 func cveClause(cve string) string {

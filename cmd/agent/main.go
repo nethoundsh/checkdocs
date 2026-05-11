@@ -59,10 +59,10 @@ func main() {
 		br = brave.NewClient(braveKey)
 	}
 
-	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, br, log)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, br, db.HasResearch(ctx), log)
 
 	events := make(chan agent.Event, 16)
 	go ag.Run(ctx, agent.NewSession(), question, events)

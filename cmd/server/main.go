@@ -114,8 +114,13 @@ func main() {
 		log.Info("brave search enabled")
 	}
 
+	hasResearch := db.HasResearch(context.Background())
+	if hasResearch {
+		log.Info("research corpus available")
+	}
+
 	store := newSessionStore()
-	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, br, log))
+	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, br, hasResearch, log))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -150,7 +155,7 @@ type chatRequest struct {
 }
 
 // chatHandler streams the agent's events as Server-Sent Events.
-func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *brave.Client, log *slog.Logger) http.HandlerFunc {
+func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *brave.Client, hasResearch bool, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// BYOK: the user's key arrives as a header. Never log it.
 		apiKey := strings.TrimSpace(r.Header.Get("X-OpenRouter-Key"))
@@ -204,7 +209,7 @@ func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *bra
 			vc = vulncheck.NewClient(vcToken)
 		}
 
-		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, br, log)
+		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, br, hasResearch, log)
 
 		events := make(chan agent.Event, 16)
 		go ag.Run(r.Context(), sess, req.Question, events)

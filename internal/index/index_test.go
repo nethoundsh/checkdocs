@@ -213,6 +213,104 @@ func TestSearchTitleRanksHigher(t *testing.T) {
 	}
 }
 
+func TestHasResearch(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if db.HasResearch(ctx) {
+		t.Error("empty db should not have research pages")
+	}
+
+	// Docs page should not count.
+	if err := db.Upsert(ctx, Page{
+		URL:     "https://docs.vulncheck.com/api",
+		Title:   "API",
+		Content: "some docs",
+	}, time.Now().Unix()); err != nil {
+		t.Fatalf("upsert docs: %v", err)
+	}
+	if db.HasResearch(ctx) {
+		t.Error("docs-only db should not report HasResearch")
+	}
+
+	// Adding a research:// page flips the flag.
+	if err := db.Upsert(ctx, Page{
+		URL:     "research://initial-access/initial-access.ipynb",
+		Title:   "Initial Access Intelligence",
+		Content: "CVEs in IAI | 849",
+	}, time.Now().Unix()); err != nil {
+		t.Fatalf("upsert research: %v", err)
+	}
+	if !db.HasResearch(ctx) {
+		t.Error("db with research:// page should report HasResearch")
+	}
+}
+
+func TestSearchResearchIsolated(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	// A docs page and a research page that both match "exploitation".
+	if err := db.Upsert(ctx, Page{
+		URL:     "https://docs.vulncheck.com/products/kev",
+		Title:   "KEV",
+		Content: "exploitation data from the KEV catalog",
+	}, now); err != nil {
+		t.Fatalf("upsert docs: %v", err)
+	}
+	if err := db.Upsert(ctx, Page{
+		URL:        "research://known-exploited-vulnerabilities/2025-dashboard.ipynb",
+		Title:      "2025 VulnCheck Known Exploited Vulnerabilities",
+		Breadcrumb: "Research / Known Exploited Vulnerabilities",
+		Content:    "exploitation timelines and KEV dashboard statistics for 2025",
+	}, now); err != nil {
+		t.Fatalf("upsert research: %v", err)
+	}
+
+	results, err := db.SearchResearch(ctx, "exploitation", 5)
+	if err != nil {
+		t.Fatalf("SearchResearch: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 research result, got %d", len(results))
+	}
+	if results[0].URL != "research://known-exploited-vulnerabilities/2025-dashboard.ipynb" {
+		t.Errorf("wrong URL: got %q", results[0].URL)
+	}
+
+	// Verify search_docs still returns the docs page (not filtered out).
+	docsResults, err := db.Search(ctx, "exploitation", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(docsResults) == 0 {
+		t.Error("Search should return both corpora, got none")
+	}
+	var foundDocs bool
+	for _, r := range docsResults {
+		if r.URL == "https://docs.vulncheck.com/products/kev" {
+			foundDocs = true
+		}
+	}
+	if !foundDocs {
+		t.Error("docs page missing from Search results")
+	}
+}
+
+func TestSearchResearchEmpty(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	results, err := db.SearchResearch(ctx, "zzznoresultszzz", 5)
+	if err != nil {
+		t.Fatalf("SearchResearch: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
 func TestSearchLimitRespected(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

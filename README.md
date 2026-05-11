@@ -1,6 +1,6 @@
 # checkdocs
 
-> Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation and live intelligence API — a BM25-indexed, locally-served assistant built in Go.
+> Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation, live intelligence API, and vulnerability-research notebooks — a BM25-indexed, locally-served assistant built in Go.
 
 Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
 
@@ -8,7 +8,9 @@ Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live 
 
 ## What it does
 
-`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant docs pages and returns a cited answer grounded in retrieved content.
+`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant pages and returns a cited answer grounded in retrieved content.
+
+A second corpus — VulnCheck's open-source [vulnerability-research](https://github.com/vulncheck-oss/vulnerability-research) Jupyter notebooks — can be indexed alongside the docs. These notebooks contain KEV dashboards, exploitation timeline analysis, initial access coverage stats, canary detection metrics, reserved-but-exploited CVE lists, and trending data. Once synced, the agent can answer data questions like "how many CVEs were added to KEV in 2025?" or "which vendors have the most exploited CVEs?" by reading the notebook outputs directly.
 
 With a VulnCheck API token, the agent gains four additional live-data tools that query `api.vulncheck.com/v3/` directly:
 
@@ -29,6 +31,14 @@ With a Brave Search API key, the agent gains two additional tools:
 | `find_vendor_cves` | Composite: searches the web for `{vendor} CVE {year}`, extracts CVE IDs from results, and enriches each with VulnCheck KEV status (if a VulnCheck token is also present) |
 
 `find_vendor_cves` is the correct tool for "are there any OPNsense vulnerabilities?" style questions — it replaces the brute-force CVE ID enumeration pattern that a model without web access would otherwise attempt.
+
+When the research corpus is synced, the agent gains one more tool:
+
+| Tool | What it does |
+|---|---|
+| `search_research` | BM25 search over indexed notebook content — markdown prose, HTML table data, Plotly chart titles and category labels |
+
+`search_research` results can then be fetched in full with `fetch_page` using the `research://` URL returned in the result, giving the agent access to complete notebook outputs including KEV statistics tables and vendor/product breakdowns.
 
 Two interfaces ship: a **CLI** for quick lookups from the terminal and an **HTTP server** with a browser-based chat UI for longer research sessions.
 
@@ -70,7 +80,27 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 │  • Generates breadcrumb hierarchy │
 │  • Upserts into SQLite (WAL mode) │
 └───────────────────────┬───────────┘
-                        │ writes
+                        │ writes (url: https://...)
+                        │
+┌───────────────────────┴──────────────────────────────────┐
+│  vulnerability-research/  (Jupyter notebooks, optional)  │
+│  ──────────────────────────────────────────────────────  │
+│  • 14 .ipynb files across 8 topic directories            │
+│  • KEV dashboards, exploitation timelines, IAI stats,    │
+│    canary detections, reserved CVEs, trending data       │
+└───────────────────────┬──────────────────────────────────┘
+                        │
+                        ▼
+┌───────────────────────────────────┐
+│  cmd/research-sync                │
+│  ─────────────────────────────── │
+│  • Parses nbformat v4 JSON        │
+│  • Extracts markdown prose,       │
+│    HTML table rows, Plotly titles │
+│    and category labels            │
+│  • Upserts with research:// URLs  │
+└───────────────────────┬───────────┘
+                        │ writes (url: research://...)
                         ▼
 ┌───────────────────────────────────┐
 │  data/docs.db  (SQLite + FTS5)    │
@@ -82,6 +112,9 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 │      breadcrumb ×  5.0            │
 │      body       ×  1.0            │
 │  Porter stemmer + unicode61        │
+│  URL prefix distinguishes corpora │
+│    https://  → scraped docs       │
+│    research:// → notebooks        │
 └─────────┬─────────────────────────┘
           │ reads (concurrent, WAL)
           ▼
@@ -91,6 +124,9 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 │  Doc tools (always):                                         │
 │    search_docs(query, limit)  →  BM25 results + snippets    │
 │    fetch_page(url)            →  full markdown content       │
+│                                                              │
+│  Research tool (when research corpus is indexed):            │
+│    search_research(query)     →  notebook-scoped BM25       │
 │                                                              │
 │  Live tools (when VulnCheck token present):                  │
 │    kev_lookup      cve_exploits                              │
@@ -173,7 +209,21 @@ Four live-data tools extend the agent when a VulnCheck API token is present. The
 
 The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages ("not available on your tier") rather than silent empty results, so the model can explain the limitation rather than hallucinating data.
 
-### 6. Brave Search — web fallback and vendor CVE enumeration
+### 6. Research corpus — notebooks as a searchable third source
+
+VulnCheck's open-source `vulnerability-research` repository contains Jupyter notebooks that serve as the ground truth for the platform's own published analysis. Rather than scraping a rendered website, `cmd/research-sync` reads the pre-computed cell outputs from the raw `.ipynb` JSON — no Python runtime required.
+
+Three output types are extracted:
+
+- **Markdown cells** — prose context, section headings, methodology notes
+- **HTML tables** (pandas `DataFrame.to_html()` outputs) — converted to pipe-delimited rows for FTS indexing; this is where the actual statistics live (CVE counts, coverage percentages, vendor breakdowns)
+- **Plotly chart titles and category labels** — chart titles describe what data is shown; `labels` arrays in treemap and bar traces carry the vendor/product/CVE category strings
+
+PNG image outputs and binary-encoded numeric arrays (Plotly's `bdata` format) are skipped — they contain no text signal useful for search.
+
+Indexed pages use `research://` URL prefixes, which the `SearchResearch` index method filters on via a join predicate (`p.url LIKE 'research://%'`). The same FTS5 table and BM25 weights serve both corpora; the prefix is the only discriminator. `HasResearch()` checks at startup whether any such pages exist, so the `search_research` tool and its system prompt addendum are silently omitted when the corpus hasn't been synced — zero overhead for users who don't need it.
+
+### 7. Brave Search — web fallback and vendor CVE enumeration
 
 When `BRAVE_API_KEY` is set, the agent gains `web_search` and the composite `find_vendor_cves` tool. The composite tool codifies a three-step workflow that the model would otherwise attempt manually (and badly): (1) Brave search for `{vendor} CVE {year}`, (2) regex extraction of CVE IDs from result titles and descriptions, (3) concurrent KEV enrichment for each extracted ID via VulnCheck if a token is present. The result is a table of candidate CVEs with their KEV status — typically from one tool call rather than 30+.
 
@@ -208,6 +258,17 @@ go run ./cmd/scraper
 # Fetches docs.vulncheck.com/llms.txt, downloads 102 pages, writes data/docs.db
 # Takes ~2 minutes at the default 1-second politeness delay.
 ```
+
+### 2b. (Optional) Index the vulnerability-research notebooks
+
+```bash
+git clone https://github.com/vulncheck-oss/vulnerability-research research
+go run ./cmd/research-sync
+# Parses 14 notebooks, upserts into data/docs.db with research:// URLs.
+# Instant — no network calls, reads local .ipynb files only.
+```
+
+After this step the agent automatically gains the `search_research` tool and will use it for questions about KEV statistics, vendor coverage, exploitation trends, and other data found in the notebooks.
 
 ### 3a. Run the CLI agent
 
@@ -315,6 +376,21 @@ go run ./cmd/scraper -db /var/data/vulncheck-docs.db
 
 The index automatically stays in sync via SQLite triggers: insert/update/delete on the `pages` table propagates to the `pages_fts` virtual table without any application-layer bookkeeping.
 
+### Re-syncing the research corpus
+
+`research-sync` is also idempotent — re-run it after pulling the latest notebooks:
+
+```bash
+cd research && git pull && cd ..
+go run ./cmd/research-sync
+
+# Custom paths
+go run ./cmd/research-sync -research /path/to/vulnerability-research -db data/docs.db
+
+# Verbose output
+go run ./cmd/research-sync -v
+```
+
 ---
 
 ## Supported models
@@ -356,16 +432,19 @@ The `internal/index` tests run against a real SQLite file in a temp directory �
 ```
 checkdocs/
 ├── cmd/
-│   ├── agent/        # CLI entrypoint
-│   ├── scraper/      # One-shot doc crawler
-│   └── server/       # HTTP API + embedded web UI
-│       └── web/      # index.html (embedded at build time)
+│   ├── agent/          # CLI entrypoint
+│   ├── research-sync/  # Jupyter notebook ingestion CLI
+│   ├── scraper/        # One-shot doc crawler
+│   └── server/         # HTTP API + embedded web UI
+│       └── web/        # index.html (embedded at build time)
 ├── internal/
-│   ├── agent/        # Tool-using LLM loop, event types
-│   ├── brave/        # Brave Web Search API client
-│   ├── index/        # SQLite open/migrate/search/upsert
-│   └── vulncheck/    # VulnCheck v3 API client, response cache, retry
-├── data/             # docs.db lives here (gitignored)
+│   ├── agent/          # Tool-using LLM loop, event types
+│   ├── brave/          # Brave Web Search API client
+│   ├── index/          # SQLite open/migrate/search/upsert (both corpora)
+│   ├── research/       # Notebook parser (nbformat v4 → indexable Page)
+│   └── vulncheck/      # VulnCheck v3 API client, response cache, retry
+├── research/           # vulnerability-research checkout (gitignored)
+├── data/               # docs.db lives here (gitignored)
 └── go.mod
 ```
 
@@ -377,6 +456,7 @@ checkdocs/
 - [x] Multi-turn conversation memory with 30-minute session TTL and "New chat" reset
 - [x] Live VulnCheck API tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`)
 - [x] Brave Search integration (`web_search`, `find_vendor_cves` composite with concurrent KEV enrichment)
+- [x] Vulnerability-research notebook ingestion (`search_research` tool, `research://` corpus alongside docs)
 - [x] Test suite for the index, scraper, and server layers
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)
