@@ -2,7 +2,13 @@
 
 > Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation, live intelligence API, and vulnerability-research notebooks — a BM25-indexed, locally-served assistant built in Go.
 
-Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
+Built in Go. Default model: `anthropic/claude-sonnet-4.5` via OpenRouter (swap with any compatible model via flag). A VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
+
+---
+
+## Background
+
+VulnCheck publishes excellent documentation and intelligence data, but answering operational questions — "is this CVE actively exploited?", "which vendors have the most KEV entries this quarter?", "do detection rules exist for this vulnerability?" — means cross-referencing the docs site, the live v3 API, and their open-source research notebooks by hand. `checkdocs` unifies those three sources behind a single agent interface: ask in plain English, get a cited answer drawn from whichever sources are relevant.
 
 ---
 
@@ -41,6 +47,8 @@ When the research corpus is synced, the agent gains one more tool:
 `search_research` results can then be fetched in full with `fetch_page` using the `research://` URL returned in the result, giving the agent access to complete notebook outputs including KEV statistics tables and vendor/product breakdowns.
 
 Two interfaces ship: a **CLI** for quick lookups from the terminal and an **HTTP server** with a browser-based chat UI for longer research sessions.
+
+*Example output (illustrative):*
 
 ```
 $ go run ./cmd/agent "What endpoints are available for Initial Access Intelligence?"
@@ -207,7 +215,7 @@ level=INFO msg=chat model=anthropic/claude-sonnet-4.5 q_len=47
 
 Four live-data tools extend the agent when a VulnCheck API token is present. The design follows a hybrid pattern: named, purpose-built tools (`kev_lookup`, `cve_exploits`, `detection_rules`) cover the most common intelligence queries with clean, constrained inputs; `vulncheck_query` serves as an escape hatch for anything not covered, accepting an arbitrary index name and parameters.
 
-The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages ("not available on your tier") rather than silent empty results, so the model can explain the limitation rather than hallucinating data.
+The tools omit themselves gracefully at runtime. `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `xdb`, `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages — "this is a coverage gap for the current token tier, not confirmation that no data exists" — rather than silent empty results, so the model explains the limitation accurately rather than hallucinating an absence.
 
 ### 6. Research corpus — notebooks as a searchable third source
 
@@ -219,7 +227,7 @@ Three output types are extracted:
 - **HTML tables** (pandas `DataFrame.to_html()` outputs) — converted to pipe-delimited rows for FTS indexing; this is where the actual statistics live (CVE counts, coverage percentages, vendor breakdowns)
 - **Plotly chart titles and category labels** — chart titles describe what data is shown; `labels` arrays in treemap and bar traces carry the vendor/product/CVE category strings
 
-PNG image outputs and binary-encoded numeric arrays (Plotly's `bdata` format) are skipped — they contain no text signal useful for search.
+PNG image outputs and binary-encoded numeric arrays (Plotly's `bdata` format) are skipped — they contain no text signal useful for search. This means matplotlib chart images aren't queryable; the agent can describe what these charts show using surrounding markdown context but cannot return the underlying data points. Plotly charts and pandas HTML tables are fully queryable — those outputs carry the actual statistics.
 
 Indexed pages use `research://` URL prefixes, which the `SearchResearch` index method filters on via a join predicate (`p.url LIKE 'research://%'`). The same FTS5 table and BM25 weights serve both corpora; the prefix is the only discriminator. `HasResearch()` checks at startup whether any such pages exist, so the `search_research` tool and its system prompt addendum are silently omitted when the corpus hasn't been synced — zero overhead for users who don't need it.
 
@@ -231,9 +239,19 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 
 ---
 
+## Design alternatives considered
+
+**Why not a vector database?** The docs corpus is ~102 pages; the notebook corpus is 14 files. At this scale, BM25 on FTS5 outperforms semantic search on precision for exact technical terms — CVE IDs, API endpoint paths, product names. There's no embedding inference cost, no external service dependency, and SQLite's WAL mode handles concurrent reads without additional infrastructure.
+
+**Why not LangChain or LlamaIndex?** This is a Go project. The agent loop — stream completion, accumulate tool calls, dispatch concurrently, feed results back — is about 100 lines of explicit code. Framework abstractions add indirection without adding capability at this scope, and make the tool dispatch logic harder to audit for a security-focused tool.
+
+**Why not OpenAI directly?** OpenRouter provides a single API surface for any model. Swapping from Claude to Gemini to GPT-4o is a flag change, not a code change — which matters both for cost experimentation and for demonstrating model-agnostic agentic design.
+
+---
+
 ## Prerequisites
 
-- **Go 1.21+** (the module targets `go 1.26.3` — any recent toolchain works)
+- **Go 1.26.3+** — matches the module directive in `go.mod`
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
 - An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
 - An optional **[Brave Search](https://api-dashboard.search.brave.com/) API key** — enables `web_search` and `find_vendor_cves`; pricing is credit-based ($5/1,000 requests), with $5 free monthly credit if you attribute Brave Search on your project
@@ -244,7 +262,7 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 
 ## Quick start
 
-### 1. Clone and build
+### 1. Clone
 
 ```bash
 git clone https://github.com/nethoundsh/checkdocs
@@ -415,15 +433,16 @@ Any `openai`-compatible model slug from OpenRouter can be passed via `-model` on
 go test ./...
 ```
 
-16 tests across three packages, no external dependencies required:
+28 tests across four packages, no external dependencies required:
 
 | Package | Tests | What's covered |
 |---|---|---|
 | `cmd/scraper` | 3 | `deriveHumanURL`, `breadcrumbFromURL`, `titleCase` — pure URL and string transforms |
-| `internal/index` | 8 | Upsert + get roundtrip, missing-URL nil return, upsert idempotency, FTS trigger sync, basic search, empty search, BM25 title-ranking, limit enforcement |
+| `internal/index` | 11 | Upsert/get roundtrip, nil-on-miss, idempotency, FTS trigger sync, search, empty search, BM25 title-ranking, limit enforcement, `HasResearch`, `SearchResearch` corpus isolation, `SearchResearch` empty |
 | `cmd/server` | 5 | SSE wire format (`writeSSE`), all four HTTP validation paths in `chatHandler` (missing key → 401, bad JSON → 400, empty question → 400, over-length → 400), and the 8000-char boundary |
+| `internal/research` | 12 | `joinSource` (array + string forms), HTML table → markdown conversion, `parsePlotlyTitle` (string, object, and null forms), `toTitle`, `ParseFile` title extraction (H1, H2 fallback, filename fallback), HTML table content in index, Plotly title and label extraction, binary `bdata` values handled safely, `Walk` checkpoint directory exclusion |
 
-The `internal/index` tests run against a real SQLite file in a temp directory — no mocking, no in-memory shortcuts — so the FTS triggers and BM25 ranking weights are exercised exactly as they run in production.
+The `internal/index` and `internal/research` tests run against real SQLite files in temp directories — no mocking — so the FTS triggers, BM25 ranking weights, and notebook parsing logic are exercised exactly as they run in production.
 
 ---
 
@@ -450,6 +469,16 @@ checkdocs/
 
 ---
 
+## Limitations
+
+- **Lexical search only.** BM25 does not handle paraphrase queries well — "how do I authenticate?" won't rank as highly as a search for "authentication bearer token." Semantic/hybrid search is on the roadmap.
+- **LLM can still hallucinate.** When source material is sparse or ambiguous, the model may fill gaps with plausible but unverified claims. Every factual claim in the output should carry an inline citation; treat uncited claims with skepticism.
+- **VulnCheck community tier covers a limited index set.** `initial-access`, `botnets`, `ransomware`, `threat-actors`, and detection rules all require a paid VulnCheck tier. The agent surfaces 402 responses explicitly as coverage gaps rather than evidence of absence, but the gap is real.
+- **Brave is credit-based.** The free monthly credit is roughly 1,000 queries. High-volume use requires a paid plan; the server has no built-in rate-limit guard against exhausting the quota.
+- **Notebook corpus reflects the last sync.** Research notebooks are indexed on demand via `research-sync`; the agent does not auto-pull updates. Answers drawn from the research corpus may be stale if notebooks have been updated since the last sync.
+
+---
+
 ## Roadmap
 
 - [x] Adapt UI to VulnCheck brand colors and visual identity
@@ -466,4 +495,4 @@ checkdocs/
 
 ## Built by
 
-**[@nethoundsh](https://github.com/nethoundsh)** — solo project, built in a few days. Open source and under active development.
+**[@nethoundsh](https://github.com/nethoundsh)** — solo project. Open source and under active development.
