@@ -1,14 +1,25 @@
 # checkdocs
 
-> Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation — a BM25-indexed, locally-served intelligence assistant built in Go.
+> Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation and live intelligence API — a BM25-indexed, locally-served assistant built in Go.
 
-Built in Go. No external services required beyond an OpenRouter API key.
+Built in Go. Requires an OpenRouter API key; a VulnCheck API token unlocks live intelligence queries.
 
 ---
 
 ## What it does
 
-`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant docs pages and returns a cited answer grounded in retrieved content, with instructions to say so plainly when the docs don't cover something rather than fall back on general knowledge.
+`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant docs pages and returns a cited answer grounded in retrieved content.
+
+With a VulnCheck API token, the agent gains four additional live-data tools that query `api.vulncheck.com/v3/` directly:
+
+| Tool | What it answers |
+|---|---|
+| `kev_lookup` | Is this CVE in the KEV catalog? When was it added? Is it linked to ransomware campaigns? |
+| `cve_exploits` | What botnets, ransomware families, or threat actors exploit this CVE? (queries available indices concurrently) |
+| `detection_rules` | Give me Suricata or Snort rules for this CVE |
+| `vulncheck_query` | Escape hatch — query any index by name with arbitrary parameters |
+
+Without a VulnCheck token the tool surface is docs-only; the live tools are silently omitted from the agent's tool list.
 
 Two interfaces ship: a **CLI** for quick lookups from the terminal and an **HTTP server** with a browser-based chat UI for longer research sessions.
 
@@ -68,13 +79,24 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 ┌─────────────────────────────────────────────────────────────┐
 │  internal/agent  (tool-using LLM loop)                      │
 │  ─────────────────────────────────────────────────────────  │
-│  Tools:                                                      │
+│  Doc tools (always):                                         │
 │    search_docs(query, limit)  →  BM25 results + snippets    │
 │    fetch_page(url)            →  full markdown content       │
 │                                                              │
+│  Live tools (when VulnCheck token present):                  │
+│    kev_lookup      cve_exploits                              │
+│    detection_rules vulncheck_query                           │
+│          │                                                   │
+│          └── internal/vulncheck  ─────────────────────────┐ │
+│               • 10-min response cache                      │ │
+│               • exponential backoff (429 / 5xx)            │ │
+│               • tier-aware index discovery                 │ │
+│               └──────────────────────────────────────────►─┤ │
+│                              api.vulncheck.com/v3/         │ │
 │  Loop:  system prompt → user question → [tool call →        │
 │         tool result]* → streamed answer  (max 16 iterations)│
 │                                                              │
+│  Session: message history persisted per UUID, 30-min TTL    │
 │  Backend: OpenRouter (OpenAI-compatible API)                 │
 │  Default model: anthropic/claude-sonnet-4.5                  │
 └───────┬─────────────────┬───────────────────────────────────┘
@@ -87,7 +109,8 @@ download per API key. Source: [Initial Access Intelligence](https://docs.vulnche
 │  events and   │  │  POST /api/chat  → SSE event stream      │
 │  renders ANSI │  │  GET  /          → embedded web UI       │
 │  to stdout    │  │                                          │
-└───────────────┘  │  BYOK: X-OpenRouter-Key header           │
+└───────────────┘  │  BYOK: X-OpenRouter-Key (required)       │
+                   │        X-VulnCheck-Token (optional)      │
                    │  per-request, never stored or logged     │
                    └──────────────────────────────────────────┘
 ```
@@ -120,11 +143,17 @@ No `WriteTimeout` is set on the HTTP server — SSE responses are long-lived by 
 
 ### 4. BYOK — the server never touches your API key
 
-The OpenRouter API key is passed by the browser as an `X-OpenRouter-Key` request header and flows directly into the agent constructor for that request. It is never logged, never stored in a session, and exits scope when the handler returns. The server-side log line for a chat request records only model name and question length:
+The OpenRouter API key is passed by the browser as an `X-OpenRouter-Key` request header and flows directly into the agent constructor for that request. It is never logged, never stored in a session, and exits scope when the handler returns. The same pattern applies to the optional `X-VulnCheck-Token` — a fresh `vulncheck.Client` is constructed per request and discarded when the handler returns. The server-side log line for a chat request records only model name and question length:
 
 ```
 level=INFO msg=chat model=anthropic/claude-sonnet-4.5 q_len=47
 ```
+
+### 5. VulnCheck API tools — named tools for the 80% case, escape hatch for the rest
+
+Four live-data tools extend the agent when a VulnCheck API token is present. The design follows a hybrid pattern: named, purpose-built tools (`kev_lookup`, `cve_exploits`, `detection_rules`) cover the most common intelligence queries with clean, constrained inputs; `vulncheck_query` serves as an escape hatch for anything not covered, accepting an arbitrary index name and parameters.
+
+The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages ("not available on your tier") rather than silent empty results, so the model can explain the limitation rather than hallucinating data.
 
 ---
 
@@ -132,6 +161,7 @@ level=INFO msg=chat model=anthropic/claude-sonnet-4.5 q_len=47
 
 - **Go 1.21+** (the module targets `go 1.26.3` — any recent toolchain works)
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
+- An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
 - The web UI fetches two CDN assets at runtime: Montserrat from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
 
@@ -185,7 +215,8 @@ Flags:
   -model   OpenRouter model identifier (default: anthropic/claude-sonnet-4.5)
 
 Environment:
-  OPENROUTER_API_KEY   required; loaded from .env if present
+  OPENROUTER_API_KEY     required; loaded from .env if present
+  VULNCHECK_API_TOKEN    optional; enables live VulnCheck API tools; loaded from .env if present
 ```
 
 The CLI renders tool activity in color to stderr (cyan for calls, green for results) and streams the final answer to stdout — pipe-friendly.
@@ -218,9 +249,10 @@ POST /api/chat
 Headers:
   Content-Type: application/json
   X-OpenRouter-Key: sk-or-v1-...
+  X-VulnCheck-Token: <token> (optional — enables live intelligence tools)
 
 Body:
-  { "question": "string", "model": "string (optional)" }
+  { "question": "string", "model": "string (optional)", "session_id": "string (optional)" }
 
 Response: text/event-stream
 ```
@@ -229,6 +261,7 @@ SSE event types:
 
 | Event | Payload fields | Description |
 |---|---|---|
+| `session` | `Content` | Session UUID — capture this and send as `session_id` on subsequent requests to continue the conversation |
 | `tool_call` | `Name`, `Args` | Agent is about to call a tool |
 | `tool_result` | `Name`, `Result` | Tool returned; human-readable summary |
 | `token` | `Content` | Streamed answer token |
@@ -300,7 +333,8 @@ checkdocs/
 │       └── web/      # index.html (embedded at build time)
 ├── internal/
 │   ├── agent/        # Tool-using LLM loop, event types
-│   └── index/        # SQLite open/migrate/search/upsert
+│   ├── index/        # SQLite open/migrate/search/upsert
+│   └── vulncheck/    # VulnCheck v3 API client, response cache, retry
 ├── data/             # docs.db lives here (gitignored)
 └── go.mod
 ```
@@ -310,11 +344,12 @@ checkdocs/
 ## Roadmap
 
 - [x] Adapt UI to VulnCheck brand colors and visual identity
-- [ ] Multi-turn conversation memory (currently each question is a fresh session)
+- [x] Multi-turn conversation memory with 30-minute session TTL and "New chat" reset
+- [x] Live VulnCheck API tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`)
+- [x] Test suite for the index, scraper, and server layers
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)
 - [ ] Public deployment with rate limiting and key sandboxing
-- [x] Test suite for the index, scraper, and server layers
 
 ---
 

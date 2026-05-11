@@ -119,7 +119,8 @@
       <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
       <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
     </select>
-    <input type="password" id="apikey" placeholder="OpenRouter API key (sk-or-v1-...)" autocomplete="off">
+    <input type="password" id="apikey" placeholder="OpenRouter key (sk-or-v1-...)" autocomplete="off">
+    <input type="password" id="vctoken" placeholder="VulnCheck token (optional)" autocomplete="off">
   </div>
 </header>
 
@@ -150,6 +151,7 @@
   const modelEl = document.getElementById('model');
   const submitBtn = document.getElementById('submit');
   const newChatBtn = document.getElementById('newchat');
+  const vctokenEl = document.getElementById('vctoken');
 
   // Session ID for multi-turn memory. Null means the next question starts a new session.
   let currentSessionID = null;
@@ -157,8 +159,10 @@
   // Persist key & model preference for the session only.
   apikeyEl.value = sessionStorage.getItem('orkey') || '';
   modelEl.value = sessionStorage.getItem('model') || modelEl.value;
+  vctokenEl.value = sessionStorage.getItem('vctoken') || '';
   apikeyEl.addEventListener('change', () => sessionStorage.setItem('orkey', apikeyEl.value));
   modelEl.addEventListener('change', () => sessionStorage.setItem('model', modelEl.value));
+  vctokenEl.addEventListener('change', () => sessionStorage.setItem('vctoken', vctokenEl.value));
 
   newChatBtn.addEventListener('click', () => {
     currentSessionID = null;
@@ -250,6 +254,7 @@
         headers: {
           'Content-Type': 'application/json',
           'X-OpenRouter-Key': apikey,
+          'X-VulnCheck-Token': vctokenEl.value.trim(),
         },
         body: JSON.stringify({ question, model: modelEl.value, session_id: currentSessionID }),
       });

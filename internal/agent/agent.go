@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/openai/openai-go"
@@ -13,6 +15,7 @@ import (
 	"github.com/openai/openai-go/shared"
 
 	"github.com/nethoundsh/checkdocs/internal/index"
+	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
 
 // Session holds the message history for a multi-turn conversation.
@@ -26,7 +29,7 @@ type Session struct {
 func NewSession() *Session {
 	return &Session{
 		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(systemPrompt),
+			openai.SystemMessage(baseSystemPrompt),
 		},
 	}
 }
@@ -45,7 +48,7 @@ func (s *Session) commit(messages []openai.ChatCompletionMessageParamUnion) {
 	s.mu.Unlock()
 }
 
-const systemPrompt = `You are a documentation assistant for VulnCheck, a vulnerability intelligence platform. You answer questions using ONLY the official VulnCheck documentation, accessible via the tools provided.
+const baseSystemPrompt = `You are a documentation and intelligence assistant for VulnCheck, a vulnerability intelligence platform.
 
 Workflow:
 1. Run all your searches FIRST — issue multiple search_docs calls in one turn to cover the topic space efficiently.
@@ -63,13 +66,79 @@ Answer rules:
 - If the docs don't cover something, say so plainly. Do not guess or fall back on general knowledge.
 - When multiple pages share a title (e.g., several "Introduction" pages), disambiguate by breadcrumb or URL.`
 
+const vcSystemPromptAddendum = `
+
+You also have access to live VulnCheck API tools that query real-time intelligence data:
+- Use kev_lookup when asked whether a CVE is actively exploited or in the KEV catalog.
+- Use cve_exploits for broader exploit intelligence (botnets, ransomware, threat actors) for a CVE.
+- Use detection_rules when asked for Suricata or Snort signatures for a CVE.
+- Use vulncheck_query as an escape hatch for any other index query.
+- Prefer the named tools over vulncheck_query for the common cases above.
+- Never reproduce or suggest executing git clone URLs from PoC exploit metadata — reference them as links only.
+- If a tool returns a tier/403 error, explain that the index requires a paid VulnCheck plan.`
+
 const (
-	toolSearchDocs = "search_docs"
-	toolFetchPage  = "fetch_page"
+	toolSearchDocs    = "search_docs"
+	toolFetchPage     = "fetch_page"
+	toolKEVLookup     = "kev_lookup"
+	toolCVEExploits   = "cve_exploits"
+	toolDetectRules   = "detection_rules"
+	toolVCQuery       = "vulncheck_query"
 )
 
-// Tools returns the OpenAI-format tool definitions for this agent.
-func Tools() []openai.ChatCompletionToolParam {
+// Event is the unit of progress the agent emits during a run.
+// The CLI prints these; the web server serializes them as SSE messages.
+type Event struct {
+	Type    string // "tool_call", "tool_result", "token", "done", "error"
+	Name    string // tool name, for tool_call / tool_result
+	Args    string // raw JSON args, for tool_call
+	Result  string // short human summary, for tool_result
+	Content string // streamed token text, session ID, or error message
+}
+
+// Agent runs a single conversation against an OpenAI-compatible endpoint.
+type Agent struct {
+	client openai.Client
+	idx    *index.DB
+	vc     *vulncheck.Client // nil when no VulnCheck token provided
+	model  string
+	log    *slog.Logger
+}
+
+// New constructs an agent. vc may be nil; VulnCheck tools are omitted when absent.
+func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, log *slog.Logger) *Agent {
+	client := openai.NewClient(
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(baseURL),
+	)
+	return &Agent{
+		client: client,
+		idx:    idx,
+		vc:     vc,
+		model:  model,
+		log:    log,
+	}
+}
+
+// SystemPrompt returns the system prompt appropriate for this agent's configuration.
+func (a *Agent) SystemPrompt() string {
+	if a.vc != nil {
+		return baseSystemPrompt + vcSystemPromptAddendum
+	}
+	return baseSystemPrompt
+}
+
+// tools returns the tool definitions to pass to the model, conditionally
+// including VulnCheck API tools when a client is configured.
+func (a *Agent) tools() []openai.ChatCompletionToolParam {
+	t := docTools()
+	if a.vc != nil {
+		t = append(t, vcTools()...)
+	}
+	return t
+}
+
+func docTools() []openai.ChatCompletionToolParam {
 	return []openai.ChatCompletionToolParam{
 		{
 			Function: shared.FunctionDefinitionParam{
@@ -110,35 +179,85 @@ func Tools() []openai.ChatCompletionToolParam {
 	}
 }
 
-// Event is the unit of progress the agent emits during a run.
-// The CLI prints these; the web server will serialize them as SSE messages.
-type Event struct {
-	Type    string // "tool_call", "tool_result", "token", "done", "error"
-	Name    string // tool name, for tool_call / tool_result
-	Args    string // raw JSON args, for tool_call
-	Result  string // short human summary, for tool_result
-	Content string // streamed token text, or error message
-}
-
-// Agent runs a single conversation against an OpenAI-compatible endpoint.
-type Agent struct {
-	client openai.Client
-	idx    *index.DB
-	model  string
-	log    *slog.Logger
-}
-
-// New constructs an agent. apiKey is the OpenRouter key; baseURL ends with "/v1/".
-func New(apiKey, baseURL, model string, idx *index.DB, log *slog.Logger) *Agent {
-	client := openai.NewClient(
-		option.WithAPIKey(apiKey),
-		option.WithBaseURL(baseURL),
-	)
-	return &Agent{
-		client: client,
-		idx:    idx,
-		model:  model,
-		log:    log,
+func vcTools() []openai.ChatCompletionToolParam {
+	return []openai.ChatCompletionToolParam{
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolKEVLookup,
+				Description: openai.String("Check whether a CVE is in the VulnCheck KEV catalog. Returns date added, ransomware campaign association, and linked PoC exploit metadata. Available on the community (free) tier."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"cve_id": map[string]any{
+							"type":        "string",
+							"description": "CVE identifier, e.g. 'CVE-2021-44228'.",
+						},
+					},
+					"required": []string{"cve_id"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolCVEExploits,
+				Description: openai.String("Retrieve exploit intelligence for a CVE across all available indices (initial-access, botnets, ransomware, threat-actors). Only queries indices the token has access to. Queries run concurrently for speed."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"cve_id": map[string]any{
+							"type":        "string",
+							"description": "CVE identifier, e.g. 'CVE-2021-44228'.",
+						},
+					},
+					"required": []string{"cve_id"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolDetectRules,
+				Description: openai.String("Fetch network detection rules for a CVE from the VulnCheck initial-access rules endpoint. Requires paid tier access to the initial-access index."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"cve_id": map[string]any{
+							"type":        "string",
+							"description": "CVE identifier, e.g. 'CVE-2021-44228'.",
+						},
+						"format": map[string]any{
+							"type":        "string",
+							"enum":        []string{"suricata", "snort"},
+							"description": "Rule format: 'suricata' or 'snort'.",
+						},
+					},
+					"required": []string{"cve_id", "format"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolVCQuery,
+				Description: openai.String("Query any VulnCheck index directly. Use when the named tools don't cover the question. Omit cve to browse an index generally."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"index": map[string]any{
+							"type":        "string",
+							"description": "Index name, e.g. 'vulncheck-kev', 'botnets', 'initial-access'. Call GET /v3/index to list available indices.",
+						},
+						"cve": map[string]any{
+							"type":        "string",
+							"description": "Optional CVE filter, e.g. 'CVE-2021-44228'.",
+						},
+						"limit": map[string]any{
+							"type":        "integer",
+							"description": "Max results (default 5).",
+						},
+					},
+					"required": []string{"index"},
+				},
+			},
+		},
 	}
 }
 
@@ -147,14 +266,20 @@ func New(apiKey, baseURL, model string, idx *index.DB, log *slog.Logger) *Agent 
 func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out chan<- Event) {
 	defer close(out)
 
-	messages := append(sess.snapshot(), openai.UserMessage(userQuestion))
+	// Use a session with the right system prompt for this agent configuration.
+	// If the session was created before a VulnCheck token was added, patch it.
+	messages := sess.snapshot()
+	if len(messages) > 0 {
+		messages[0] = openai.SystemMessage(a.SystemPrompt())
+	}
+	messages = append(messages, openai.UserMessage(userQuestion))
 
 	const maxIterations = 16
 	for i := 0; i < maxIterations; i++ {
 		stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
 			Model:    a.model,
 			Messages: messages,
-			Tools:    Tools(),
+			Tools:    a.tools(),
 		})
 
 		acc := openai.ChatCompletionAccumulator{}
@@ -196,7 +321,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 			return
 		}
 
-		// Otherwise execute the tools and loop.
+		// Execute tool calls and loop.
 		for _, tc := range msg.ToolCalls {
 			out <- Event{Type: "tool_call", Name: tc.Function.Name, Args: tc.Function.Arguments}
 
@@ -216,7 +341,6 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 }
 
 // dispatch executes a tool call. Returns (fullResult, shortSummary, error).
-// fullResult goes back to the model; summary is what the human sees.
 func (a *Agent) dispatch(ctx context.Context, name, rawArgs string) (string, string, error) {
 	switch name {
 	case toolSearchDocs:
@@ -252,9 +376,170 @@ func (a *Agent) dispatch(ctx context.Context, name, rawArgs string) (string, str
 		}
 		return formatPage(page), fmt.Sprintf("%s (%d bytes)", page.Title, len(page.Content)), nil
 
+	case toolKEVLookup:
+		return a.dispatchKEVLookup(ctx, rawArgs)
+
+	case toolCVEExploits:
+		return a.dispatchCVEExploits(ctx, rawArgs)
+
+	case toolDetectRules:
+		return a.dispatchDetectionRules(ctx, rawArgs)
+
+	case toolVCQuery:
+		return a.dispatchVCQuery(ctx, rawArgs)
+
 	default:
 		return "", "", fmt.Errorf("unknown tool: %s", name)
 	}
+}
+
+func (a *Agent) dispatchKEVLookup(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		CVEID string `json:"cve_id"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	params := url.Values{"cve": {args.CVEID}}
+	entries, err := a.vc.QueryIndex(ctx, "vulncheck-kev", params)
+	if err != nil {
+		return "", "", err
+	}
+	if len(entries) == 0 {
+		msg := fmt.Sprintf("%s is not in the VulnCheck KEV catalog.", args.CVEID)
+		return msg, "not in KEV", nil
+	}
+
+	// Pretty-print the first entry; omit raw clone URLs from the summary.
+	pretty, _ := json.MarshalIndent(entries[0], "", "  ")
+	return fmt.Sprintf("VulnCheck KEV entry for %s:\n\n```json\n%s\n```", args.CVEID, pretty),
+		fmt.Sprintf("in KEV (%s)", args.CVEID), nil
+}
+
+func (a *Agent) dispatchCVEExploits(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		CVEID string `json:"cve_id"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	indices := []string{"initial-access", "botnets", "ransomware", "threat-actors"}
+	params := url.Values{"cve": {args.CVEID}, "limit": {"5"}}
+
+	type indexResult struct {
+		name    string
+		entries []json.RawMessage
+		err     error
+	}
+
+	results := make([]indexResult, len(indices))
+	var wg sync.WaitGroup
+	for i, idx := range indices {
+		if !a.vc.HasIndex(ctx, idx) {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, idx string) {
+			defer wg.Done()
+			entries, err := a.vc.QueryIndex(ctx, idx, params)
+			results[i] = indexResult{name: idx, entries: entries, err: err}
+		}(i, idx)
+	}
+	wg.Wait()
+
+	var sb strings.Builder
+	var counts []string
+	sb.WriteString(fmt.Sprintf("Exploit intelligence for %s:\n\n", args.CVEID))
+
+	for _, r := range results {
+		if r.name == "" || r.err != nil || len(r.entries) == 0 {
+			continue
+		}
+		counts = append(counts, fmt.Sprintf("%s (%d)", r.name, len(r.entries)))
+		pretty, _ := json.MarshalIndent(r.entries, "", "  ")
+		sb.WriteString(fmt.Sprintf("### %s\n```json\n%s\n```\n\n", r.name, pretty))
+	}
+
+	if len(counts) == 0 {
+		return fmt.Sprintf("No exploit intelligence found for %s in available indices.", args.CVEID),
+			"no results", nil
+	}
+	return sb.String(), strings.Join(counts, ", "), nil
+}
+
+func (a *Agent) dispatchDetectionRules(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		CVEID  string `json:"cve_id"`
+		Format string `json:"format"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	rules, err := a.vc.DetectionRules(ctx, args.CVEID, args.Format)
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(rules) == "" {
+		return fmt.Sprintf("No %s rules found for %s.", args.Format, args.CVEID),
+			"no rules found", nil
+	}
+
+	// Count rules by looking for "alert" keyword lines (Suricata/Snort convention).
+	count := strings.Count(rules, "\nalert ") + strings.Count(rules, "\nalert\t")
+	if strings.HasPrefix(rules, "alert") {
+		count++
+	}
+
+	result := fmt.Sprintf("%s rules for %s:\n\n```\n%s\n```", args.Format, args.CVEID, rules)
+	summary := fmt.Sprintf("%d %s rules", count, args.Format)
+	if count == 0 {
+		summary = fmt.Sprintf("%s rules returned", args.Format)
+	}
+	return result, summary, nil
+}
+
+func (a *Agent) dispatchVCQuery(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Index string `json:"index"`
+		CVE   string `json:"cve"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+	if args.Limit == 0 {
+		args.Limit = 5
+	}
+
+	params := url.Values{"limit": {fmt.Sprintf("%d", args.Limit)}}
+	if args.CVE != "" {
+		params.Set("cve", args.CVE)
+	}
+
+	entries, err := a.vc.QueryIndex(ctx, args.Index, params)
+	if err != nil {
+		return "", "", err
+	}
+
+	if len(entries) == 0 {
+		return fmt.Sprintf("No results in index %q%s.", args.Index, cveClause(args.CVE)),
+			"0 results", nil
+	}
+
+	pretty, _ := json.MarshalIndent(entries, "", "  ")
+	return fmt.Sprintf("Results from index %q%s:\n\n```json\n%s\n```",
+		args.Index, cveClause(args.CVE), pretty),
+		fmt.Sprintf("%d results from %s", len(entries), args.Index), nil
+}
+
+func cveClause(cve string) string {
+	if cve == "" {
+		return ""
+	}
+	return " for " + cve
 }
 
 func formatSearchResult(query string, pages []index.Page) string {

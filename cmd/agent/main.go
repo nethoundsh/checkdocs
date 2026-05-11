@@ -13,6 +13,7 @@ import (
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
 	"github.com/nethoundsh/checkdocs/internal/index"
+	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
 
 const (
@@ -47,7 +48,12 @@ func main() {
 	}
 	defer db.Close()
 
-	ag := agent.New(apiKey, openRouterBaseURL, *model, db, log)
+	var vc *vulncheck.Client
+	if vcToken := os.Getenv("VULNCHECK_API_TOKEN"); vcToken != "" {
+		vc = vulncheck.NewClient(vcToken)
+	}
+
+	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, log)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()

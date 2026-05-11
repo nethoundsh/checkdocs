@@ -23,6 +23,7 @@ import (
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
 	"github.com/nethoundsh/checkdocs/internal/index"
+	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
 
 const sessionTTL = 30 * time.Minute
@@ -191,7 +192,12 @@ func chatHandler(db *index.DB, defaultModel string, store *sessionStore, log *sl
 		}
 		flusher.Flush()
 
-		ag := agent.New(apiKey, openRouterBaseURL, model, db, log)
+		var vc *vulncheck.Client
+		if vcToken := strings.TrimSpace(r.Header.Get("X-VulnCheck-Token")); vcToken != "" {
+			vc = vulncheck.NewClient(vcToken)
+		}
+
+		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, log)
 
 		events := make(chan agent.Event, 16)
 		go ag.Run(r.Context(), sess, req.Question, events)
