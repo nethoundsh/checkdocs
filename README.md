@@ -132,7 +132,8 @@ level=INFO msg=chat model=anthropic/claude-sonnet-4.5 q_len=47
 
 - **Go 1.21+** (the module targets `go 1.26.3` — any recent toolchain works)
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
-- No other runtime dependencies — SQLite is compiled into the binary via `modernc.org/sqlite` (pure Go, no cgo)
+- No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
+- The web UI fetches two CDN assets at runtime: Montserrat from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
 
 ---
 
@@ -270,6 +271,24 @@ Any `openai`-compatible model slug from OpenRouter can be passed via `-model` on
 
 ---
 
+## Testing
+
+```bash
+go test ./...
+```
+
+16 tests across three packages, no external dependencies required:
+
+| Package | Tests | What's covered |
+|---|---|---|
+| `cmd/scraper` | 3 | `deriveHumanURL`, `breadcrumbFromURL`, `titleCase` — pure URL and string transforms |
+| `internal/index` | 8 | Upsert + get roundtrip, missing-URL nil return, upsert idempotency, FTS trigger sync, basic search, empty search, BM25 title-ranking, limit enforcement |
+| `cmd/server` | 5 | SSE wire format (`writeSSE`), all four HTTP validation paths in `chatHandler` (missing key → 401, bad JSON → 400, empty question → 400, over-length → 400), and the 8000-char boundary |
+
+The `internal/index` tests run against a real SQLite file in a temp directory — no mocking, no in-memory shortcuts — so the FTS triggers and BM25 ranking weights are exercised exactly as they run in production.
+
+---
+
 ## Project structure
 
 ```
@@ -295,7 +314,7 @@ checkdocs/
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)
 - [ ] Public deployment with rate limiting and key sandboxing
-- [ ] Test suite for the index and agent dispatch layers
+- [x] Test suite for the index, scraper, and server layers
 
 ---
 
