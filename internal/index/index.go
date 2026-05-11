@@ -5,7 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
+	"strings"
 	_ "modernc.org/sqlite"
 )
 
@@ -116,9 +116,15 @@ func (db *DB) Get(ctx context.Context, url string) (*Page, error) {
 }
 
 // Search runs an FTS5 MATCH query and returns ranked results with snippets.
+// User-supplied queries are sanitized so FTS5 operators (-, ", :, AND/OR/NOT)
+// are treated as literal tokens, not query syntax.
 func (db *DB) Search(ctx context.Context, query string, limit int) ([]Page, error) {
 	if limit <= 0 || limit > 20 {
 		limit = 5
+	}
+	safe := sanitizeFTSQuery(query)
+	if safe == "" {
+		return nil, nil
 	}
 	rows, err := db.conn.QueryContext(ctx, `
 		SELECT p.url, p.title, p.breadcrumb,
@@ -128,7 +134,7 @@ func (db *DB) Search(ctx context.Context, query string, limit int) ([]Page, erro
 		WHERE pages_fts MATCH ?
 		ORDER BY bm25(pages_fts, 10.0, 5.0, 1.0)
 		LIMIT ?
-	`, query, limit)
+	`, safe, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -142,4 +148,23 @@ func (db *DB) Search(ctx context.Context, query string, limit int) ([]Page, erro
 		out = append(out, p)
 	}
 	return out, rows.Err()
+}
+
+// sanitizeFTSQuery escapes FTS5 query syntax. Each whitespace-separated token
+// is wrapped in double quotes (with internal quotes doubled per FTS5 rules)
+// so characters like '-', ':', '(', ')', and operator keywords are treated
+// literally. Tokens are joined with implicit AND.
+func sanitizeFTSQuery(q string) string {
+	q = strings.TrimSpace(q)
+	if q == "" {
+		return ""
+	}
+	parts := strings.Fields(q)
+	for i, p := range parts {
+		// Strip characters FTS5 won't accept even inside a quoted phrase.
+		// Letters, digits, and basic punctuation are fine.
+		p = strings.ReplaceAll(p, `"`, `""`) // double internal quotes
+		parts[i] = `"` + p + `"`
+	}
+	return strings.Join(parts, " ")
 }

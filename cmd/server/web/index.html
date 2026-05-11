@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>checkdocs · VulnCheck docs assistant</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600&display=swap">
+<style>
+  :root {
+    /* VulnCheck brand palette — pantone (periwinkle/blue-purple) + emerald */
+    --bg: #0d0f1a;
+    --bg-soft: #161828;
+    --bg-hard: #090b14;
+    --fg: #e8ecf7;        /* pantone-100 */
+    --fg-dim: #9fa9da;    /* pantone-400 */
+    --fg-muted: #6667ab;  /* pantone-700 */
+    --accent: #6e71bd;    /* pantone-600 */
+    --accent-bright: #868ece; /* pantone-500 */
+    --green: #10b981;     /* emerald-500 */
+    --aqua: #9fa9da;      /* pantone-400 */
+    --red: #ef4444;
+    --blue: #4d4f86;      /* pantone-800 */
+    --border: #23253a;
+    --mono: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    --sans: "Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg); font-family: var(--sans); }
+  body { min-height: 100vh; display: flex; flex-direction: column; }
+
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px;
+  }
+  header h1 {
+    margin: 0; font-size: 15px; font-family: var(--sans); color: var(--fg);
+    font-weight: 600; letter-spacing: 0.01em;
+  }
+  header h1 .subtitle { color: var(--fg-muted); font-weight: 400; }
+  header .controls { display: flex; gap: 8px; align-items: center; font-family: var(--mono); font-size: 13px; }
+  header input, header select {
+    background: var(--bg-hard); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 6px 8px; font-family: var(--mono); font-size: 13px;
+  }
+  header input:focus, header select:focus { outline: none; border-color: var(--accent); }
+  header input[type="password"] { width: 240px; }
+
+  main { flex: 1; max-width: 920px; width: 100%; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .transcript { display: flex; flex-direction: column; gap: 24px; }
+
+  .turn { display: flex; flex-direction: column; gap: 12px; }
+  .turn.user .bubble {
+    background: var(--bg-soft); border: 1px solid var(--border); border-left: 3px solid var(--blue);
+    padding: 12px 16px; border-radius: 4px; font-family: var(--mono); font-size: 14px;
+    white-space: pre-wrap; word-break: break-word;
+  }
+
+  .tools { display: flex; flex-direction: column; gap: 4px; font-family: var(--mono); font-size: 12px; }
+  .tool-call { color: var(--aqua); }
+  .tool-call .args { color: var(--fg-muted); }
+  .tool-result { color: var(--green); padding-left: 16px; }
+  .tool-result.err { color: var(--red); }
+
+  .answer {
+    background: var(--bg-soft); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    padding: 16px 20px; border-radius: 4px; font-size: 15px; line-height: 1.55;
+    word-break: break-word;
+  }
+  .answer h1, .answer h2, .answer h3 { color: var(--accent-bright); margin-top: 1em; }
+  .answer h1 { font-size: 1.3em; } .answer h2 { font-size: 1.15em; } .answer h3 { font-size: 1.05em; }
+  .answer code { font-family: var(--mono); background: var(--bg-hard); padding: 1px 6px; border-radius: 3px; font-size: 0.92em; }
+  .answer pre { background: var(--bg-hard); padding: 12px; border-radius: 4px; overflow-x: auto; }
+  .answer pre code { background: transparent; padding: 0; }
+  .answer a { color: var(--accent-bright); }
+  .answer a:hover { color: var(--accent); }
+
+  footer { padding: 12px 24px; border-top: 1px solid var(--border); }
+  form { display: flex; gap: 8px; max-width: 920px; margin: 0 auto; }
+  form input[type="text"] {
+    flex: 1; background: var(--bg-hard); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 10px 12px; font-family: var(--mono); font-size: 14px;
+  }
+  form input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  form button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 4px;
+    padding: 0 20px; font-family: var(--sans); font-weight: 600; font-size: 14px;
+    letter-spacing: 0.02em; cursor: pointer;
+  }
+  form button:hover:not(:disabled) { background: var(--accent-bright); }
+  form button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .empty-state {
+    color: var(--fg-muted); font-family: var(--sans); font-size: 13px; font-weight: 300;
+    text-align: center; padding: 48px 16px; line-height: 1.7;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>checkdocs <span class="subtitle">· VulnCheck docs agent</span></h1>
+  <div class="controls">
+    <select id="model" title="OpenRouter model">
+      <option value="anthropic/claude-sonnet-4.5">claude-sonnet-4.5</option>
+      <option value="anthropic/claude-opus-4.6">claude-opus-4.6</option>
+      <option value="google/gemini-2.5-pro">gemini-2.5-pro</option>
+      <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
+      <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
+    </select>
+    <input type="password" id="apikey" placeholder="OpenRouter API key (sk-or-v1-...)" autocomplete="off">
+  </div>
+</header>
+
+<main>
+  <div id="transcript" class="transcript">
+    <div class="empty-state">
+      Enter your OpenRouter key above, then ask a question about the VulnCheck docs.<br>
+      Try: <em>"How do I authenticate to the API?"</em> or <em>"Summarize Initial Access Intelligence."</em>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <form id="chatform">
+    <input type="text" id="question" placeholder="Ask about VulnCheck docs…" autocomplete="off" required>
+    <button type="submit" id="submit">Send</button>
+  </form>
+</footer>
+
+<!-- marked.js for client-side markdown → HTML rendering. CDN is fine for a portfolio piece. -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script>
+(() => {
+  const transcript = document.getElementById('transcript');
+  const form = document.getElementById('chatform');
+  const questionEl = document.getElementById('question');
+  const apikeyEl = document.getElementById('apikey');
+  const modelEl = document.getElementById('model');
+  const submitBtn = document.getElementById('submit');
+
+  // Persist key & model preference for the session only.
+  apikeyEl.value = sessionStorage.getItem('orkey') || '';
+  modelEl.value = sessionStorage.getItem('model') || modelEl.value;
+  apikeyEl.addEventListener('change', () => sessionStorage.setItem('orkey', apikeyEl.value));
+  modelEl.addEventListener('change', () => sessionStorage.setItem('model', modelEl.value));
+
+  marked.setOptions({ breaks: true, gfm: true });
+
+  function clearEmpty() {
+    const e = transcript.querySelector('.empty-state');
+    if (e) e.remove();
+  }
+
+  function addUserTurn(question) {
+    clearEmpty();
+    const turn = document.createElement('div');
+    turn.className = 'turn user';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.textContent = question;
+    turn.appendChild(bubble);
+    transcript.appendChild(turn);
+    return turn;
+  }
+
+  function addAssistantTurn() {
+    const turn = document.createElement('div');
+    turn.className = 'turn assistant';
+    const tools = document.createElement('div');
+    tools.className = 'tools';
+    const answer = document.createElement('div');
+    answer.className = 'answer';
+    turn.appendChild(tools);
+    turn.appendChild(answer);
+    transcript.appendChild(turn);
+
+    let raw = '';
+    return {
+      onToolCall(name, args) {
+        const div = document.createElement('div');
+        div.className = 'tool-call';
+        div.innerHTML = `→ <strong>${escape(name)}</strong>(<span class="args">${escape(args)}</span>)`;
+        tools.appendChild(div);
+      },
+      onToolResult(name, result, isErr) {
+        const div = document.createElement('div');
+        div.className = 'tool-result' + (isErr ? ' err' : '');
+        div.textContent = `  ✓ ${result}`;
+        tools.appendChild(div);
+      },
+      onToken(text) {
+        raw += text;
+        answer.innerHTML = marked.parse(raw);
+      },
+      onError(msg) {
+        const div = document.createElement('div');
+        div.className = 'tool-result err';
+        div.textContent = `✗ ${msg}`;
+        tools.appendChild(div);
+      },
+    };
+  }
+
+  function escape(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[c]));
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const question = questionEl.value.trim();
+    const apikey = apikeyEl.value.trim();
+    if (!question || !apikey) {
+      if (!apikey) apikeyEl.focus();
+      return;
+    }
+
+    addUserTurn(question);
+    const turn = addAssistantTurn();
+
+    questionEl.value = '';
+    submitBtn.disabled = true;
+
+    try {
+      const resp = await fetch('/api/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-OpenRouter-Key': apikey,
+        },
+        body: JSON.stringify({ question, model: modelEl.value }),
+      });
+      if (!resp.ok) {
+        const txt = await resp.text();
+        turn.onError(`HTTP ${resp.status}: ${txt}`);
+        return;
+      }
+
+      // Manual SSE parsing — EventSource doesn't allow custom headers.
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const events = buf.split('\n\n');
+        buf = events.pop(); // last partial chunk stays in buffer
+        for (const block of events) {
+          handleSSEBlock(block, turn);
+        }
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'instant' });
+      }
+    } catch (err) {
+      turn.onError(err.message || String(err));
+    } finally {
+      submitBtn.disabled = false;
+      questionEl.focus();
+    }
+  });
+
+  function handleSSEBlock(block, turn) {
+    let event = 'message', data = '';
+    for (const line of block.split('\n')) {
+      if (line.startsWith('event: ')) event = line.slice(7);
+      else if (line.startsWith('data: ')) data += line.slice(6);
+    }
+    if (!data) return;
+    let payload;
+    try { payload = JSON.parse(data); } catch { return; }
+
+    switch (event) {
+      case 'tool_call':   turn.onToolCall(payload.Name, payload.Args); break;
+      case 'tool_result': turn.onToolResult(payload.Name, payload.Result, /error/i.test(payload.Result)); break;
+      case 'token':       turn.onToken(payload.Content); break;
+      case 'error':       turn.onError(payload.Content); break;
+      case 'done':        break;
+    }
+  }
+})();
+</script>
+</body>
+</html>
