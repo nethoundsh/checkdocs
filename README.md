@@ -163,7 +163,7 @@ The tools omit themselves gracefully — `internal/vulncheck.Client.HasIndex()` 
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
 - An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
-- The web UI fetches two CDN assets at runtime: Montserrat from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
+- The web UI fetches two CDN assets at runtime: Inter from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
 
 ---
 
@@ -200,7 +200,7 @@ go run ./cmd/server
 # Listening on :8080
 
 open http://localhost:8080
-# Enter your OpenRouter key in the header input, then ask questions.
+# Click "Keys" to enter your OpenRouter key, then ask questions.
 ```
 
 ---

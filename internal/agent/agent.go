@@ -64,8 +64,14 @@ Efficiency rules (you have a limited number of turns):
 
 Answer rules:
 - Cite every factual claim with the page URL it came from, in markdown link form: [Title](URL).
+- Use descriptive link text, not bare URLs: write [Meta's security advisory](https://...) not https://...
 - If the docs don't cover something, say so plainly. Do not guess or fall back on general knowledge.
-- When multiple pages share a title (e.g., several "Introduction" pages), disambiguate by breadcrumb or URL.`
+- When multiple pages share a title (e.g., several "Introduction" pages), disambiguate by breadcrumb or URL.
+
+Output formatting rules:
+- Always emit a blank line before any markdown heading (##, ###, etc.).
+- Use bold at most once per paragraph, and only for the single most important phrase. Do not bold every technical term.
+- Use inline backticks for CVE IDs, API endpoints, tool names, and other technical identifiers.`
 
 const vcSystemPromptAddendum = `
 
