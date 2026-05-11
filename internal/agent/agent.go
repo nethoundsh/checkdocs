@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 
@@ -72,10 +73,13 @@ You also have access to live VulnCheck API tools that query real-time intelligen
 - Use kev_lookup when asked whether a CVE is actively exploited or in the KEV catalog.
 - Use cve_exploits for broader exploit intelligence (botnets, ransomware, threat actors) for a CVE.
 - Use detection_rules when asked for Suricata or Snort signatures for a CVE.
-- Use vulncheck_query as an escape hatch for any other index query.
+- Use vulncheck_query as an escape hatch for any other index query — only for indices listed as available below.
 - Prefer the named tools over vulncheck_query for the common cases above.
 - Never reproduce or suggest executing git clone URLs from PoC exploit metadata — reference them as links only.
-- If a tool returns a tier/403 error, explain that the index requires a paid VulnCheck plan.`
+
+Critical: distinguish "no results" from "query failed":
+- "no results" means the index was queried and returned nothing — this is real evidence of absence.
+- A 402 or 403 error means the index is a coverage gap for this token tier — it is NOT evidence of absence. Say so explicitly and note that a paid tier would cover it.`
 
 const (
 	toolSearchDocs    = "search_docs"
@@ -270,7 +274,22 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 	// If the session was created before a VulnCheck token was added, patch it.
 	messages := sess.snapshot()
 	if len(messages) > 0 {
-		messages[0] = openai.SystemMessage(a.SystemPrompt())
+		prompt := a.SystemPrompt()
+		// Inject available indices up-front so the model knows what it can
+		// query before making tool calls, avoiding reactive 402 discovery.
+		if a.vc != nil {
+			if avail, err := a.vc.AvailableIndices(ctx); err == nil && len(avail) > 0 {
+				names := make([]string, 0, len(avail))
+				for name := range avail {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				prompt += "\n\nVulnCheck indices available for this token: " +
+					strings.Join(names, ", ") +
+					". Do not call vulncheck_query with indices not on this list — they will fail with a tier error."
+			}
+		}
+		messages[0] = openai.SystemMessage(prompt)
 	}
 	messages = append(messages, openai.UserMessage(userQuestion))
 
@@ -321,18 +340,39 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 			return
 		}
 
-		// Execute tool calls and loop.
-		for _, tc := range msg.ToolCalls {
+		// Emit all tool_call events before dispatching, then run dispatches
+		// concurrently. Results are collected into a pre-indexed slice so the
+		// goroutines never share a write target; no mutex required.
+		type toolOutcome struct {
+			tc      openai.ChatCompletionMessageToolCall
+			result  string
+			summary string
+		}
+		outcomes := make([]toolOutcome, len(msg.ToolCalls))
+		for i, tc := range msg.ToolCalls {
+			outcomes[i].tc = tc
 			out <- Event{Type: "tool_call", Name: tc.Function.Name, Args: tc.Function.Arguments}
+		}
 
-			result, summary, err := a.dispatch(ctx, tc.Function.Name, tc.Function.Arguments)
-			if err != nil {
-				result = fmt.Sprintf("error: %v", err)
-				summary = result
-			}
-			out <- Event{Type: "tool_result", Name: tc.Function.Name, Result: summary}
+		var wg sync.WaitGroup
+		for i, tc := range msg.ToolCalls {
+			wg.Add(1)
+			go func(i int, tc openai.ChatCompletionMessageToolCall) {
+				defer wg.Done()
+				result, summary, err := a.dispatch(ctx, tc.Function.Name, tc.Function.Arguments)
+				if err != nil {
+					result = fmt.Sprintf("error: %v", err)
+					summary = result
+				}
+				outcomes[i].result = result
+				outcomes[i].summary = summary
+			}(i, tc)
+		}
+		wg.Wait()
 
-			messages = append(messages, openai.ToolMessage(result, tc.ID))
+		for _, o := range outcomes {
+			out <- Event{Type: "tool_result", Name: o.tc.Function.Name, Result: o.summary}
+			messages = append(messages, openai.ToolMessage(o.result, o.tc.ID))
 		}
 	}
 

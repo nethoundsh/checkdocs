@@ -175,8 +175,10 @@ func (c *Client) get(ctx context.Context, rawURL string, params url.Values) ([]b
 			return body, nil
 		case http.StatusUnauthorized:
 			return nil, fmt.Errorf("VulnCheck: invalid or expired token (401)")
+		case http.StatusPaymentRequired:
+			return nil, fmt.Errorf("VulnCheck: index requires a paid plan (402) — this is a coverage gap, not absence of data")
 		case http.StatusForbidden:
-			return nil, fmt.Errorf("VulnCheck: index not available on your tier (403)")
+			return nil, fmt.Errorf("VulnCheck: index not available on your tier (403) — this is a coverage gap, not absence of data")
 		case http.StatusNotFound:
 			return nil, fmt.Errorf("VulnCheck: not found (404)")
 		case http.StatusTooManyRequests, http.StatusInternalServerError,
