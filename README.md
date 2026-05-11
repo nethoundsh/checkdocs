@@ -8,7 +8,7 @@ Built in Go. No external services required beyond an OpenRouter API key.
 
 ## What it does
 
-`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant docs pages and returns a grounded, cited answer — no hallucinated API fields, no guessing.
+`checkdocs` scrapes the full VulnCheck documentation, indexes it locally with SQLite FTS5, and wraps it in a tool-using LLM agent. Ask a natural-language question about VulnCheck's APIs, data endpoints, authentication, or intelligence products; the agent searches and reads the relevant docs pages and returns a cited answer grounded in retrieved content, with instructions to say so plainly when the docs don't cover something rather than fall back on general knowledge.
 
 Two interfaces ship: a **CLI** for quick lookups from the terminal and an **HTTP server** with a browser-based chat UI for longer research sessions.
 

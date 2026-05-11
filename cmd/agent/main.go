@@ -53,7 +53,7 @@ func main() {
 	defer cancel()
 
 	events := make(chan agent.Event, 16)
-	go ag.Run(ctx, question, events)
+	go ag.Run(ctx, agent.NewSession(), question, events)
 
 	for ev := range events {
 		switch ev.Type {

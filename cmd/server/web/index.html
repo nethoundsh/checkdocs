@@ -42,6 +42,12 @@
   }
   header h1 .subtitle { color: var(--fg-muted); font-weight: 400; }
   header .controls { display: flex; gap: 8px; align-items: center; font-family: var(--mono); font-size: 13px; }
+  .btn-new-chat {
+    background: transparent; color: var(--fg-muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 5px 10px; font-family: var(--sans); font-size: 12px;
+    font-weight: 500; cursor: pointer; letter-spacing: 0.02em;
+  }
+  .btn-new-chat:hover { border-color: var(--accent); color: var(--fg); }
   header input, header select {
     background: var(--bg-hard); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -105,6 +111,7 @@
 <header>
   <h1>checkdocs <span class="subtitle">· VulnCheck docs agent</span></h1>
   <div class="controls">
+    <button class="btn-new-chat" id="newchat">New chat</button>
     <select id="model" title="OpenRouter model">
       <option value="anthropic/claude-sonnet-4.5">claude-sonnet-4.5</option>
       <option value="anthropic/claude-opus-4.6">claude-opus-4.6</option>
@@ -142,12 +149,22 @@
   const apikeyEl = document.getElementById('apikey');
   const modelEl = document.getElementById('model');
   const submitBtn = document.getElementById('submit');
+  const newChatBtn = document.getElementById('newchat');
+
+  // Session ID for multi-turn memory. Null means the next question starts a new session.
+  let currentSessionID = null;
 
   // Persist key & model preference for the session only.
   apikeyEl.value = sessionStorage.getItem('orkey') || '';
   modelEl.value = sessionStorage.getItem('model') || modelEl.value;
   apikeyEl.addEventListener('change', () => sessionStorage.setItem('orkey', apikeyEl.value));
   modelEl.addEventListener('change', () => sessionStorage.setItem('model', modelEl.value));
+
+  newChatBtn.addEventListener('click', () => {
+    currentSessionID = null;
+    transcript.innerHTML = `<div class="empty-state">Enter your OpenRouter key above, then ask a question about the VulnCheck docs.<br>Try: <em>"How do I authenticate to the API?"</em> or <em>"Summarize Initial Access Intelligence."</em></div>`;
+    questionEl.focus();
+  });
 
   marked.setOptions({ breaks: true, gfm: true });
 
@@ -234,7 +251,7 @@
           'Content-Type': 'application/json',
           'X-OpenRouter-Key': apikey,
         },
-        body: JSON.stringify({ question, model: modelEl.value }),
+        body: JSON.stringify({ question, model: modelEl.value, session_id: currentSessionID }),
       });
       if (!resp.ok) {
         const txt = await resp.text();
@@ -276,6 +293,7 @@
     try { payload = JSON.parse(data); } catch { return; }
 
     switch (event) {
+      case 'session':     currentSessionID = payload.Content; break;
       case 'tool_call':   turn.onToolCall(payload.Name, payload.Args); break;
       case 'tool_result': turn.onToolResult(payload.Name, payload.Result, /error/i.test(payload.Result)); break;
       case 'token':       turn.onToken(payload.Content); break;

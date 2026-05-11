@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -13,6 +14,36 @@ import (
 
 	"github.com/nethoundsh/checkdocs/internal/index"
 )
+
+// Session holds the message history for a multi-turn conversation.
+// All methods are safe for concurrent use.
+type Session struct {
+	mu       sync.Mutex
+	messages []openai.ChatCompletionMessageParamUnion
+}
+
+// NewSession creates a session pre-loaded with the system prompt.
+func NewSession() *Session {
+	return &Session{
+		messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(systemPrompt),
+		},
+	}
+}
+
+func (s *Session) snapshot() []openai.ChatCompletionMessageParamUnion {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := make([]openai.ChatCompletionMessageParamUnion, len(s.messages))
+	copy(cp, s.messages)
+	return cp
+}
+
+func (s *Session) commit(messages []openai.ChatCompletionMessageParamUnion) {
+	s.mu.Lock()
+	s.messages = messages
+	s.mu.Unlock()
+}
 
 const systemPrompt = `You are a documentation assistant for VulnCheck, a vulnerability intelligence platform. You answer questions using ONLY the official VulnCheck documentation, accessible via the tools provided.
 
@@ -111,15 +142,12 @@ func New(apiKey, baseURL, model string, idx *index.DB, log *slog.Logger) *Agent 
 	}
 }
 
-// Run executes the agent loop for a single user question, emitting events to
-// the provided channel. Closes the channel when done.
-func (a *Agent) Run(ctx context.Context, userQuestion string, out chan<- Event) {
+// Run executes the agent loop for one user turn, appending to sess and
+// committing the updated history on success. Closes out when done.
+func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out chan<- Event) {
 	defer close(out)
 
-	messages := []openai.ChatCompletionMessageParamUnion{
-		openai.SystemMessage(systemPrompt),
-		openai.UserMessage(userQuestion),
-	}
+	messages := append(sess.snapshot(), openai.UserMessage(userQuestion))
 
 	const maxIterations = 16
 	for i := 0; i < maxIterations; i++ {
@@ -160,6 +188,7 @@ func (a *Agent) Run(ctx context.Context, userQuestion string, out chan<- Event) 
 		// If the model didn't call any tools, we already streamed the answer. Done.
 		if len(msg.ToolCalls) == 0 {
 			if emittedAnyToken {
+				sess.commit(messages)
 				out <- Event{Type: "done"}
 			} else {
 				out <- Event{Type: "error", Content: "empty response with no tool calls"}
@@ -182,6 +211,7 @@ func (a *Agent) Run(ctx context.Context, userQuestion string, out chan<- Event) 
 		}
 	}
 
+	sess.commit(messages) // preserve context even though we didn't finish
 	out <- Event{Type: "error", Content: fmt.Sprintf("max iterations (%d) reached", maxIterations)}
 }
 

@@ -14,14 +14,62 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
 	"github.com/nethoundsh/checkdocs/internal/index"
 )
+
+const sessionTTL = 30 * time.Minute
+
+type sessionEntry struct {
+	sess       *agent.Session
+	lastAccess time.Time
+}
+
+type sessionStore struct {
+	mu      sync.Mutex
+	entries map[string]*sessionEntry
+}
+
+func newSessionStore() *sessionStore {
+	s := &sessionStore{entries: make(map[string]*sessionEntry)}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *sessionStore) getOrCreate(id string) (string, *agent.Session) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if id != "" {
+		if e, ok := s.entries[id]; ok {
+			e.lastAccess = time.Now()
+			return id, e.sess
+		}
+	}
+	id = uuid.New().String()
+	sess := agent.NewSession()
+	s.entries[id] = &sessionEntry{sess: sess, lastAccess: time.Now()}
+	return id, sess
+}
+
+func (s *sessionStore) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		s.mu.Lock()
+		for id, e := range s.entries {
+			if time.Since(e.lastAccess) > sessionTTL {
+				delete(s.entries, id)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
 
 const (
 	openRouterBaseURL = "https://openrouter.ai/api/v1/"
@@ -58,7 +106,8 @@ func main() {
 	}
 	mux.Handle("/", http.FileServer(http.FS(uiFS)))
 
-	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, log))
+	store := newSessionStore()
+	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, log))
 
 	srv := &http.Server{
 		Addr:              *addr,
@@ -87,12 +136,13 @@ func main() {
 
 // chatRequest is what the browser POSTs.
 type chatRequest struct {
-	Question string `json:"question"`
-	Model    string `json:"model,omitempty"` // optional override
+	Question  string `json:"question"`
+	Model     string `json:"model,omitempty"`      // optional override
+	SessionID string `json:"session_id,omitempty"` // omit to start a new session
 }
 
 // chatHandler streams the agent's events as Server-Sent Events.
-func chatHandler(db *index.DB, defaultModel string, log *slog.Logger) http.HandlerFunc {
+func chatHandler(db *index.DB, defaultModel string, store *sessionStore, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// BYOK: the user's key arrives as a header. Never log it.
 		apiKey := strings.TrimSpace(r.Header.Get("X-OpenRouter-Key"))
@@ -132,12 +182,19 @@ func chatHandler(db *index.DB, defaultModel string, log *slog.Logger) http.Handl
 			return
 		}
 
-		log.Info("chat", "model", model, "q_len", len(req.Question))
+		sessID, sess := store.getOrCreate(req.SessionID)
+		log.Info("chat", "model", model, "q_len", len(req.Question), "session", sessID)
+
+		// Send session ID first so the browser can track the conversation.
+		if err := writeSSE(w, agent.Event{Type: "session", Content: sessID}); err != nil {
+			return
+		}
+		flusher.Flush()
 
 		ag := agent.New(apiKey, openRouterBaseURL, model, db, log)
 
 		events := make(chan agent.Event, 16)
-		go ag.Run(r.Context(), req.Question, events)
+		go ag.Run(r.Context(), sess, req.Question, events)
 
 		for ev := range events {
 			if err := writeSSE(w, ev); err != nil {
