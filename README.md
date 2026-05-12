@@ -295,8 +295,8 @@ After this step the agent automatically gains the `search_research` tool and wil
 ### 3a. Run the CLI agent
 
 ```bash
-export OPENROUTER_API_KEY=sk-or-v1-...
-# Or create a .env file: echo "OPENROUTER_API_KEY=sk-or-v1-..." > .env
+cp .env.example .env
+# Edit .env and set OPENROUTER_API_KEY (and optionally VULNCHECK_API_TOKEN, BRAVE_API_KEY)
 
 go run ./cmd/agent "How does VulnCheck handle API authentication?"
 ```
