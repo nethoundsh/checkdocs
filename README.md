@@ -84,6 +84,11 @@ Requires Go 1.26.3+, an OpenRouter API key, and optionally a VulnCheck token and
 ### Docker (quickest path)
 
 ```bash
+# 0. Set credentials — BRAVE_API_KEY must be present before the server starts
+cp .env.example .env
+# Edit .env: set BRAVE_API_KEY (and optionally VULNCHECK_API_TOKEN)
+# OPENROUTER_API_KEY can be entered in the browser UI instead
+
 # 1. Populate the database (one-time)
 docker compose --profile init up scrape
 
