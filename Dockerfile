@@ -15,7 +15,7 @@ FROM alpine:3.21 AS research-sync-runner
 RUN apk add --no-cache git
 COPY --from=build /out/research-sync /app/research-sync
 WORKDIR /app
-CMD ["sh", "-c", "git clone --depth=1 https://github.com/vulncheck-oss/vulnerability-research /tmp/research && /app/research-sync -db /app/data/docs.db -research /tmp/research"]
+CMD ["sh", "-c", "rm -rf /tmp/research && git clone --depth=1 https://github.com/vulncheck-oss/vulnerability-research /tmp/research && /app/research-sync -db /app/data/docs.db -research /tmp/research"]
 
 FROM gcr.io/distroless/static-debian12
 WORKDIR /app
