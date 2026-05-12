@@ -2,6 +2,9 @@
 
 > Agentic Q&A over the [VulnCheck](https://docs.vulncheck.com) documentation, live intelligence API, and vulnerability-research notebooks — a BM25-indexed, locally-served assistant built in Go.
 
+[![tests](https://github.com/nethoundsh/checkdocs/actions/workflows/test.yml/badge.svg)](https://github.com/nethoundsh/checkdocs/actions/workflows/test.yml)
+[![license](https://img.shields.io/github/license/nethoundsh/checkdocs)](LICENSE)
+
 Built in Go. Default model: `anthropic/claude-sonnet-4.5` via OpenRouter (swap with any compatible model via flag). A VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
 
 ![checkdocs demo](docs/demo.gif)
@@ -70,6 +73,68 @@ VulnCheck's Initial Access Intelligence product exposes the following endpoints:
 
 Both require a Bearer token. The bulk endpoint is rate-limited to one concurrent
 download per API key. Source: [Initial Access Intelligence](https://docs.vulncheck.com/products/initial-access-intelligence)
+```
+
+---
+
+## Quick start
+
+Requires Go 1.26.3+, an OpenRouter API key, and optionally a VulnCheck token and Brave API key — see [Prerequisites](#prerequisites) for details.
+
+### Docker (quickest path)
+
+```bash
+# 1. Populate the database (one-time)
+docker compose --profile init up scrape
+
+# 2. Start the server
+docker compose up server
+# Open http://localhost:8080 — click Keys to enter your OpenRouter API key.
+```
+
+### 1. Clone
+
+```bash
+git clone https://github.com/nethoundsh/checkdocs
+cd checkdocs
+```
+
+### 2. Scrape and index the VulnCheck docs
+
+```bash
+go run ./cmd/scraper
+# Fetches docs.vulncheck.com/llms.txt, downloads 102 pages, writes data/docs.db
+# Takes ~2 minutes at the default 1-second politeness delay.
+```
+
+### 2b. (Optional) Index the vulnerability-research notebooks
+
+```bash
+git clone https://github.com/vulncheck-oss/vulnerability-research research
+go run ./cmd/research-sync
+# Parses 14 notebooks, upserts into data/docs.db with research:// URLs.
+# Instant — no network calls, reads local .ipynb files only.
+```
+
+After this step the agent automatically gains the `search_research` tool and will use it for questions about KEV statistics, vendor coverage, exploitation trends, and other data found in the notebooks.
+
+### 3a. Run the CLI agent
+
+```bash
+cp .env.example .env
+# Edit .env and set OPENROUTER_API_KEY (and optionally VULNCHECK_API_TOKEN, BRAVE_API_KEY)
+
+go run ./cmd/agent "How does VulnCheck handle API authentication?"
+```
+
+### 3b. Run the web server
+
+```bash
+go run ./cmd/server
+# Listening on :8080
+
+open http://localhost:8080
+# Click "Keys" to enter your OpenRouter key, then ask questions.
 ```
 
 ---
@@ -261,55 +326,6 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 - An optional **[Brave Search](https://api-dashboard.search.brave.com/) API key** — enables `web_search` and `find_vendor_cves`; pricing is credit-based ($5/1,000 requests), with $5 free monthly credit if you attribute Brave Search on your project
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
 - The web UI fetches two CDN assets at runtime: Inter from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
-
----
-
-## Quick start
-
-### 1. Clone
-
-```bash
-git clone https://github.com/nethoundsh/checkdocs
-cd checkdocs
-```
-
-### 2. Scrape and index the VulnCheck docs
-
-```bash
-go run ./cmd/scraper
-# Fetches docs.vulncheck.com/llms.txt, downloads 102 pages, writes data/docs.db
-# Takes ~2 minutes at the default 1-second politeness delay.
-```
-
-### 2b. (Optional) Index the vulnerability-research notebooks
-
-```bash
-git clone https://github.com/vulncheck-oss/vulnerability-research research
-go run ./cmd/research-sync
-# Parses 14 notebooks, upserts into data/docs.db with research:// URLs.
-# Instant — no network calls, reads local .ipynb files only.
-```
-
-After this step the agent automatically gains the `search_research` tool and will use it for questions about KEV statistics, vendor coverage, exploitation trends, and other data found in the notebooks.
-
-### 3a. Run the CLI agent
-
-```bash
-cp .env.example .env
-# Edit .env and set OPENROUTER_API_KEY (and optionally VULNCHECK_API_TOKEN, BRAVE_API_KEY)
-
-go run ./cmd/agent "How does VulnCheck handle API authentication?"
-```
-
-### 3b. Run the web server
-
-```bash
-go run ./cmd/server
-# Listening on :8080
-
-open http://localhost:8080
-# Click "Keys" to enter your OpenRouter key, then ask questions.
-```
 
 ---
 

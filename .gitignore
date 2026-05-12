@@ -29,3 +29,5 @@
 *.test
 *.out
 coverage.html
+
+checkdocs-critique-and-todo.md
