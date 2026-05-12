@@ -89,16 +89,18 @@ cp .env.example .env
 # Edit .env: set BRAVE_API_KEY (and optionally VULNCHECK_API_TOKEN)
 # OPENROUTER_API_KEY can be entered in the browser UI instead
 
-# 1. Populate the database (one-time)
-docker compose --profile init up scrape
+# 1. Populate the database
+make docker-scrape
 
 # 2. (Optional) Index the vulnerability-research notebooks — clones the repo automatically
-docker compose --profile research up research-sync
+make docker-sync-research
 
 # 3. Start the server
-docker compose up server
+make docker-up
 # Open http://localhost:8080 — click Keys to enter your OpenRouter API key.
 ```
+
+After `git pull`, re-run the same `make` commands — they rebuild the image and recreate the container automatically, clearing any stale state.
 
 ### 1. Clone
 
