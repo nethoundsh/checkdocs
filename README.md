@@ -83,6 +83,9 @@ Requires Go 1.26.3+, an OpenRouter API key, and optionally a VulnCheck token and
 
 ### Docker (quickest path)
 
+> **Linux prerequisite:** Docker commands run without `sudo` only if your user is in the `docker` group.
+> One-time setup: `sudo usermod -aG docker $USER` then log out and back in.
+
 ```bash
 # 0. Set credentials — BRAVE_API_KEY must be present before the server starts
 cp .env.example .env
