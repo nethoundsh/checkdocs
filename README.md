@@ -496,7 +496,7 @@ checkdocs/
 
 - **Lexical search only.** BM25 does not handle paraphrase queries well — "how do I authenticate?" won't rank as highly as a search for "authentication bearer token." Semantic/hybrid search is on the roadmap.
 - **LLM can still hallucinate.** When source material is sparse or ambiguous, the model may fill gaps with plausible but unverified claims. Every factual claim in the output should carry an inline citation; treat uncited claims with skepticism.
-- **VulnCheck community tier covers a limited index set.** `initial-access`, `botnets`, `ransomware`, `threat-actors`, and detection rules all require a paid VulnCheck tier. The agent surfaces 402 responses explicitly as coverage gaps rather than evidence of absence, but the gap is real.
+- **VulnCheck community tier covers a limited index set.** `initial-access`, `botnets`, `ransomware`, `threat-actors`, and detection rules all require a paid VulnCheck tier. The agent surfaces 402 responses as tier limitations rather than empty results, so the model can explain the gap rather than imply absence — but the coverage gap itself is real.
 - **Brave is credit-based.** The free monthly credit is roughly 1,000 queries. High-volume use requires a paid plan; the server has no built-in rate-limit guard against exhausting the quota.
 - **Notebook corpus reflects the last sync.** Research notebooks are indexed on demand via `research-sync`; the agent does not auto-pull updates. Answers drawn from the research corpus may be stale if notebooks have been updated since the last sync.
 
@@ -518,4 +518,6 @@ checkdocs/
 
 ## Built by
 
-**[@nethoundsh](https://github.com/nethoundsh)** — solo project. Open source and under active development.
+**[@nethoundsh](https://github.com/nethoundsh)** — open source and under active development.
+
+Other work: [garden.nethound.sh](https://garden.nethound.sh) · [github.com/nethoundsh](https://github.com/nethoundsh)
