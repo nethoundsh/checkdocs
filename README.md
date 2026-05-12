@@ -125,7 +125,9 @@ After this step the agent automatically gains the `search_research` tool and wil
 
 ```bash
 cp .env.example .env
-# Edit .env and set OPENROUTER_API_KEY (and optionally VULNCHECK_API_TOKEN, BRAVE_API_KEY)
+# Edit .env — required: OPENROUTER_API_KEY
+#             optional: VULNCHECK_API_TOKEN (live intelligence tools)
+#             optional: BRAVE_API_KEY       (web_search + find_vendor_cves)
 
 go run ./cmd/agent "How does VulnCheck handle API authentication?"
 ```
@@ -133,11 +135,16 @@ go run ./cmd/agent "How does VulnCheck handle API authentication?"
 ### 3b. Run the web server
 
 ```bash
+cp .env.example .env
+# Edit .env — required: OPENROUTER_API_KEY (or enter it in the UI under Keys)
+#             optional: BRAVE_API_KEY — must be set here before starting the server;
+#                       it is a server-side credential and cannot be entered in the UI
+
 go run ./cmd/server
 # Listening on :8080
 
 open http://localhost:8080
-# Click "Keys" to enter your OpenRouter key, then ask questions.
+# Click "Keys" to enter your OpenRouter key and optional VulnCheck token.
 ```
 
 ---
