@@ -4,6 +4,10 @@
 
 Built in Go. Default model: `anthropic/claude-sonnet-4.5` via OpenRouter (swap with any compatible model via flag). A VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
 
+![checkdocs demo](docs/demo.gif)
+
+▶️ **[Watch the full 2-minute demo](https://github.com/user-attachments/assets/644173bc-31f3-48b8-99b4-e52a7da7038c)**
+
 ---
 
 ## Background

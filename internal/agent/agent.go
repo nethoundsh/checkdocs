@@ -163,7 +163,10 @@ func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, br 
 // SystemPrompt returns the system prompt appropriate for this agent's configuration.
 // hasResearch should be true when research:// pages have been indexed in the DB.
 func (a *Agent) SystemPrompt(hasResearch bool) string {
-	p := baseSystemPrompt
+	p := fmt.Sprintf(
+		"Today's date is %s. For queries about recent CVEs, threat disclosures, or events that may postdate your training data, use web_search or find_vendor_cves — do not rely on training knowledge alone.\n\n",
+		time.Now().Format("January 2, 2006"),
+	) + baseSystemPrompt
 	if a.vc != nil {
 		p += vcSystemPromptAddendum
 	}
