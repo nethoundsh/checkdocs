@@ -17,10 +17,9 @@ services:
     profiles: ["init"]
 
   research-sync:
-    build: .
-    entrypoint: ["/app/research-sync"]
-    command: ["-db", "/app/data/docs.db", "-research", "/app/research"]
+    build:
+      context: .
+      target: research-sync-runner
     volumes:
       - ./data:/app/data
-      - ./research:/app/research:ro
     profiles: ["research"]

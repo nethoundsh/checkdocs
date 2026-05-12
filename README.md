@@ -87,7 +87,10 @@ Requires Go 1.26.3+, an OpenRouter API key, and optionally a VulnCheck token and
 # 1. Populate the database (one-time)
 docker compose --profile init up scrape
 
-# 2. Start the server
+# 2. (Optional) Index the vulnerability-research notebooks — clones the repo automatically
+docker compose --profile research up research-sync
+
+# 3. Start the server
 docker compose up server
 # Open http://localhost:8080 — click Keys to enter your OpenRouter API key.
 ```
