@@ -411,14 +411,15 @@
     return md.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
   }
 
-  const RESEARCH_BASE = 'https://vulncheck-oss.github.io/vulnerability-research/';
+  const RESEARCH_BASE = 'https://research.vulncheck.com/';
 
   // Rewrite research:// hrefs to the publicly hosted MyST site.
-  // research://path/to/file.ipynb → {RESEARCH_BASE}path/to/file
+  // URL is just the filename stem with a trailing slash — the directory is dropped.
+  // e.g. research://known-exploited-vulnerabilities/2025-dashboard.ipynb → {BASE}2025-dashboard/
   function sanitizeResearchLinks(html) {
     return html.replace(/href="research:\/\/([^"]*)"/gi, (_, path) => {
-      const url = RESEARCH_BASE + path.replace(/\.ipynb$/, '');
-      return `href="${url}"`;
+      const stem = path.split('/').pop().replace(/\.ipynb$/, '');
+      return `href="${RESEARCH_BASE + stem}/"`;
     });
   }
 
