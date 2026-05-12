@@ -61,9 +61,18 @@ func ParseFile(fsPath, relPath string) (*Page, error) {
 
 	content := extractText(nb)
 
+	// Derive title from the first markdown heading only — code cells also
+	// start with '#' comments and would produce wrong titles if we searched
+	// the full concatenated content.
 	title := filepath.Base(relPath)
-	if m := headingRe.FindStringSubmatch(content); m != nil {
-		title = strings.TrimSpace(m[1])
+	for _, c := range nb.Cells {
+		if c.CellType != "markdown" {
+			continue
+		}
+		if m := headingRe.FindStringSubmatch(joinSource(c.Source)); m != nil {
+			title = strings.TrimSpace(m[1])
+			break
+		}
 	}
 
 	// Breadcrumb: "Research / <directory>"
@@ -94,6 +103,13 @@ func extractText(nb notebook) string {
 			sb.WriteString(src)
 			sb.WriteString("\n\n")
 		case "code":
+			// Index source so that chart titles, column names, and comments
+			// buried in code cells (especially matplotlib charts that produce
+			// opaque PNG outputs) are reachable by keyword search.
+			if src != "" {
+				sb.WriteString(src)
+				sb.WriteString("\n\n")
+			}
 			for _, o := range c.Outputs {
 				if html, ok := extractHTML(o); ok {
 					if md := htmlTableToMarkdown(html); md != "" {
@@ -117,6 +133,10 @@ func extractText(nb notebook) string {
 						sb.WriteString("\n\n")
 					}
 				}
+				if text := extractTextOutput(o); text != "" {
+					sb.WriteString(text)
+					sb.WriteString("\n\n")
+				}
 			}
 		}
 	}
@@ -139,6 +159,26 @@ func joinSource(raw json.RawMessage) string {
 		return s
 	}
 	return ""
+}
+
+// extractTextOutput returns printable text from stream (stdout/stderr) and
+// execute_result/display_data text/plain outputs. Skips Python repr strings
+// like "<pandas.io.formats.style.Styler at 0x...>" which add no signal.
+func extractTextOutput(o cellOutput) string {
+	var raw json.RawMessage
+	if o.OutputType == "stream" {
+		raw = o.Text
+	} else if o.OutputType == "execute_result" || o.OutputType == "display_data" {
+		raw = o.Data["text/plain"]
+	}
+	if len(raw) == 0 {
+		return ""
+	}
+	text := strings.TrimSpace(joinSource(raw))
+	if strings.HasPrefix(text, "<") {
+		return "" // skip repr strings
+	}
+	return text
 }
 
 // extractHTML returns the text/html mime content if the output contains it.
