@@ -411,6 +411,17 @@
     return md.replace(/([^\n])\n(#{1,6} )/g, '$1\n\n$2');
   }
 
+  const RESEARCH_BASE = 'https://vulncheck-oss.github.io/vulnerability-research/';
+
+  // Rewrite research:// hrefs to the publicly hosted MyST site.
+  // research://path/to/file.ipynb → {RESEARCH_BASE}path/to/file
+  function sanitizeResearchLinks(html) {
+    return html.replace(/href="research:\/\/([^"]*)"/gi, (_, path) => {
+      const url = RESEARCH_BASE + path.replace(/\.ipynb$/, '');
+      return `href="${url}"`;
+    });
+  }
+
   function clearEmpty() {
     const e = transcript.querySelector('.empty-state');
     if (e) e.remove();
@@ -474,7 +485,7 @@
       },
       onToken(text) {
         raw += text;
-        answer.innerHTML = marked.parse(normalizeMarkdown(raw));
+        answer.innerHTML = sanitizeResearchLinks(marked.parse(normalizeMarkdown(raw)));
       },
       onError(msg) {
         const div = document.createElement('div');
