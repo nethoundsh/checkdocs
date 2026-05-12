@@ -1,0 +1,26 @@
+services:
+  server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - BRAVE_API_KEY=${BRAVE_API_KEY:-}
+
+  scrape:
+    build: .
+    entrypoint: ["/app/scraper"]
+    command: ["-db", "/app/data/docs.db"]
+    volumes:
+      - ./data:/app/data
+    profiles: ["init"]
+
+  research-sync:
+    build: .
+    entrypoint: ["/app/research-sync"]
+    command: ["-db", "/app/data/docs.db", "-research", "/app/research"]
+    volumes:
+      - ./data:/app/data
+      - ./research:/app/research:ro
+    profiles: ["research"]
