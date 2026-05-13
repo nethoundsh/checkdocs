@@ -215,7 +215,8 @@ After search_research returns snippets, use fetch_page with the research:// URL 
 const braveSystemPromptAddendum = `
 
 Web search is available via the web_search and find_vendor_cves tools:
-- Use find_vendor_cves(vendor, year) when asked about CVEs for a vendor or product. It searches the web, extracts CVE IDs, and optionally enriches them with VulnCheck. This is the correct tool for vendor enumeration — do NOT iterate CVE IDs manually.
+- Use find_vendor_cves(vendor, year) when search_cpe is NOT available (no VulnCheck token), or to supplement search_cpe with web context. It searches the web, extracts CVE IDs from results, and optionally enriches them with VulnCheck KEV status. Web-extracted CVE IDs may be misattributed — always cross-check with kev_lookup or cve_exploits before stating a CVE belongs to a specific vendor.
+- If search_cpe is available (VulnCheck token present), prefer it for vendor CVE enumeration — it queries structured CPE data and is more accurate than web scraping.
 - Use web_search for general research: recent threat disclosures, CVE context not in VulnCheck, news about an incident or threat actor.
 - Do NOT use web search as a primary source when VulnCheck already has the answer — prefer VulnCheck data for all KEV, exploitation, and detection queries.
 - After finding candidate CVE IDs via web search or find_vendor_cves, enrich them with kev_lookup or cve_exploits where relevant.`
@@ -448,7 +449,9 @@ func braveTools() []openai.ChatCompletionToolParam {
 				Description: openai.String(
 					"Find CVEs for a vendor or product by searching the web and extracting CVE IDs from results. " +
 						"Optionally enriches each CVE with VulnCheck KEV status. " +
-						"Use this instead of iterating CVE IDs manually — it is the correct tool for 'what CVEs exist for vendor X?' questions."),
+						"Use when search_cpe is not available (no VulnCheck token) or to supplement it with web context. " +
+						"NOTE: web-extracted CVE IDs may be misattributed — always verify attribution with kev_lookup or cve_exploits. " +
+						"When a VulnCheck token is present, prefer search_cpe for structured, accurate vendor CVE enumeration."),
 				Parameters: shared.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
