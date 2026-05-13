@@ -264,7 +264,7 @@ open http://localhost:8080
 │  events and   │  │  GET  /health    → {"status":"ok"}       │
 │  renders ANSI │  │  POST /api/chat  → SSE event stream      │
 │  to stdout    │  │  GET  /          → embedded web UI       │
-│  to stdout    │  │                                          │
+│               │  │                                          │
 └───────────────┘  │  BYOK: X-OpenRouter-Key (required)       │
                    │        X-VulnCheck-Token (optional)      │
                    │  per-request, never stored or logged     │
@@ -311,7 +311,7 @@ Seven live-data tools extend the agent when a VulnCheck API token is present. Th
 
 The core exploitation tools (`kev_lookup`, `cve_exploits`, `detection_rules`) answer questions about a known CVE. Three supplementary tools handle package and product enumeration: `search_cpe` queries VulnCheck's CPE index by vendor, product, or version; `identify` converts a vendor/product/version tuple into canonical CPE and PURL identifiers via `/v3/identify`; `purl_lookup` accepts a Package URL string and returns CVEs and fixed versions via `/v3/purl`.
 
-The tools omit themselves gracefully at runtime. `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `xdb`, `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages — "this is a coverage gap for the current token tier, not confirmation that no data exists" — rather than silent empty results, so the model explains the limitation accurately rather than hallucinating an absence.
+The tools omit themselves gracefully at runtime. `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the lifetime of the client instance — one per request, since the client is constructed per HTTP request under the BYOK model). `cve_exploits` queries whichever of `xdb`, `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages — "this is a coverage gap for the current token tier, not confirmation that no data exists" — rather than silent empty results, so the model explains the limitation accurately rather than hallucinating an absence.
 
 ### 6. Research corpus — notebooks as a searchable third source
 
@@ -339,9 +339,9 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 
 ## Design alternatives considered
 
-**Why not a vector database?** The docs corpus is ~102 pages; the notebook corpus is 14 files. At this scale, BM25 on FTS5 outperforms semantic search on precision for exact technical terms — CVE IDs, API endpoint paths, product names. There's no embedding inference cost, no external service dependency, and SQLite's WAL mode handles concurrent reads without additional infrastructure.
+**Why not a vector database?** The docs corpus is ~102 pages (as of the last scrape from `docs.vulncheck.com/llms.txt`); the notebook corpus is ~14 files (from the `vulncheck-oss/vulnerability-research` repo). At this scale, BM25 on FTS5 outperforms semantic search on precision for exact technical terms — CVE IDs, API endpoint paths, product names. There's no embedding inference cost, no external service dependency, and SQLite's WAL mode handles concurrent reads without additional infrastructure.
 
-**Why not LangChain or LlamaIndex?** This is a Go project. The agent loop — stream completion, accumulate tool calls, dispatch concurrently, feed results back — is about 100 lines of explicit code. Framework abstractions add indirection without adding capability at this scope, and make the tool dispatch logic harder to audit for a security-focused tool.
+**Why not LangChain or LlamaIndex?** This is a Go project. The core agent loop — stream completion, accumulate tool calls, dispatch concurrently, feed results back — is about 100 lines of explicit code in `Run()` (`internal/agent/agent.go`). The full agent package is larger (~1,200 lines) due to tool dispatch functions and definitions, but each tool implementation is a standalone function with no shared mutable state. Framework abstractions add indirection without adding capability at this scope, and make the tool dispatch logic harder to audit for a security-focused tool.
 
 **Why not OpenAI directly?** OpenRouter provides a single API surface for any model. Swapping from Claude to Gemini to GPT-4o is a flag change, not a code change — which matters both for cost experimentation and for demonstrating model-agnostic agentic design.
 
