@@ -5,7 +5,7 @@
 [![tests](https://github.com/nethoundsh/checkdocs/actions/workflows/test.yml/badge.svg)](https://github.com/nethoundsh/checkdocs/actions/workflows/test.yml)
 [![license](https://img.shields.io/github/license/nethoundsh/checkdocs)](LICENSE)
 
-Built in Go. Default model: `anthropic/claude-sonnet-4.5` via OpenRouter (swap with any compatible model via flag). A VulnCheck API token unlocks live intelligence queries; a Brave Search API key unlocks web search and vendor CVE enumeration.
+Built in Go. Default model: `anthropic/claude-sonnet-4.5` via OpenRouter (swap with any compatible model via flag). A VulnCheck API token unlocks live intelligence queries including CPE-based CVE enumeration; a Brave Search API key unlocks web search and supplementary CVE discovery.
 
 ![checkdocs demo](docs/demo.gif)
 
@@ -29,13 +29,13 @@ With a VulnCheck API token, the agent gains seven additional live-data tools tha
 
 | Tool | What it answers |
 |---|---|
+| `identify` | What is the canonical CPE/PURL for this vendor/product/version? (optional pre-step before `search_cpe` when the exact slug is uncertain) |
+| `search_cpe` | What CVEs exist for this vendor or product? CPE-based enumeration across VulnCheck's coverage — community tier |
 | `kev_lookup` | Is this CVE in the KEV catalog? When was it added? Is it linked to ransomware campaigns? |
 | `cve_exploits` | What botnets, ransomware families, or threat actors exploit this CVE? (queries available indices concurrently) |
 | `detection_rules` | Give me Suricata or Snort rules for this CVE |
+| `purl_lookup` | Is this specific package version vulnerable? Look up CVEs and fixed versions by Package URL (e.g. `pkg:npm/lodash@4.17.20`) |
 | `vulncheck_query` | Escape hatch — query any index by name with arbitrary parameters |
-| `search_cpe` | Enumerate CVEs for a vendor, product, or version — CPE-based search across VulnCheck's coverage |
-| `identify` | Convert a vendor/product/version into canonical CPE and PURL identifiers |
-| `purl_lookup` | Look up CVEs and fixed versions for a Package URL (e.g. `pkg:npm/lodash@4.17.20`) |
 
 Without a VulnCheck token the tool surface is docs-only; the live tools are silently omitted from the agent's tool list.
 
@@ -229,9 +229,9 @@ open http://localhost:8080
 │    search_research(query)     →  notebook-scoped BM25       │
 │                                                              │
 │  Live tools (when VulnCheck token present):                  │
-│    kev_lookup      cve_exploits                              │
-│    detection_rules vulncheck_query                           │
-│    search_cpe      identify       purl_lookup                │
+│    identify        search_cpe                                │
+│    kev_lookup      cve_exploits   detection_rules            │
+│    purl_lookup     vulncheck_query                           │
 │          │                                                   │
 │          └── internal/vulncheck  ─────────────────────────┐ │
 │               • 10-min response cache                      │ │
@@ -261,8 +261,9 @@ open http://localhost:8080
 │  cmd/agent    │  │  cmd/server                              │
 │  ─────────── │  │  ──────────────────────────────────────  │
 │  CLI — reads  │  │  HTTP server on :8080                    │
-│  events and   │  │  POST /api/chat  → SSE event stream      │
-│  renders ANSI │  │  GET  /          → embedded web UI       │
+│  events and   │  │  GET  /health    → {"status":"ok"}       │
+│  renders ANSI │  │  POST /api/chat  → SSE event stream      │
+│  to stdout    │  │  GET  /          → embedded web UI       │
 │  to stdout    │  │                                          │
 └───────────────┘  │  BYOK: X-OpenRouter-Key (required)       │
                    │        X-VulnCheck-Token (optional)      │
@@ -350,7 +351,7 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 
 - **Go 1.26.3+** — matches the module directive in `go.mod`
 - An **[OpenRouter](https://openrouter.ai) API key** (`sk-or-v1-…`)
-- An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
+- An optional **[VulnCheck](https://vulncheck.com) API token** — enables seven live intelligence tools (`identify`, `search_cpe`, `kev_lookup`, `cve_exploits`, `detection_rules`, `purl_lookup`, `vulncheck_query`); without it the agent is docs-only
 - An optional **[Brave Search](https://api-dashboard.search.brave.com/) API key** — enables `web_search` and `find_vendor_cves`; pricing is credit-based ($5/1,000 requests), with $5 free monthly credit if you attribute Brave Search on your project
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
 
