@@ -22,6 +22,9 @@ import (
 	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
 
+// OpenRouterBaseURL is the OpenRouter API base used by both the CLI and server.
+const OpenRouterBaseURL = "https://openrouter.ai/api/v1/"
+
 var cveIDRe = regexp.MustCompile(`CVE-\d{4}-\d{4,7}`)
 
 // Session holds the message history for a multi-turn conversation.
@@ -31,13 +34,9 @@ type Session struct {
 	messages []openai.ChatCompletionMessageParamUnion
 }
 
-// NewSession creates a session pre-loaded with the system prompt.
+// NewSession creates an empty session; Run sets the system prompt on first call.
 func NewSession() *Session {
-	return &Session{
-		messages: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(baseSystemPrompt),
-		},
-	}
+	return &Session{}
 }
 
 func (s *Session) snapshot() []openai.ChatCompletionMessageParamUnion {
@@ -160,9 +159,7 @@ func New(apiKey, baseURL, model string, idx *index.DB, vc *vulncheck.Client, br 
 	}
 }
 
-// SystemPrompt returns the system prompt appropriate for this agent's configuration.
-// hasResearch should be true when research:// pages have been indexed in the DB.
-func (a *Agent) SystemPrompt(hasResearch bool) string {
+func (a *Agent) systemPrompt() string {
 	p := fmt.Sprintf(
 		"Today's date is %s. For queries about recent CVEs, threat disclosures, or events that may postdate your training data, use web_search or find_vendor_cves — do not rely on training knowledge alone.\n\n",
 		time.Now().Format("January 2, 2006"),
@@ -170,7 +167,7 @@ func (a *Agent) SystemPrompt(hasResearch bool) string {
 	if a.vc != nil {
 		p += vcSystemPromptAddendum
 	}
-	if hasResearch {
+	if a.hasResearch {
 		p += researchSystemPromptAddendum
 	}
 	if a.brave != nil {
@@ -429,26 +426,28 @@ func researchTools() []openai.ChatCompletionToolParam {
 func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out chan<- Event) {
 	defer close(out)
 
-	// Use a session with the right system prompt for this agent configuration.
-	// If the session was created before a VulnCheck token was added, patch it.
+	// Build the system prompt for this agent configuration and inject the
+	// available VulnCheck indices up-front so the model knows what it can
+	// query before making tool calls, avoiding reactive 402 discovery.
 	messages := sess.snapshot()
-	if len(messages) > 0 {
-		prompt := a.SystemPrompt(a.hasResearch)
-		// Inject available indices up-front so the model knows what it can
-		// query before making tool calls, avoiding reactive 402 discovery.
-		if a.vc != nil {
-			if avail, err := a.vc.AvailableIndices(ctx); err == nil && len(avail) > 0 {
-				names := make([]string, 0, len(avail))
-				for name := range avail {
-					names = append(names, name)
-				}
-				sort.Strings(names)
-				prompt += "\n\nVulnCheck indices available for this token: " +
-					strings.Join(names, ", ") +
-					". Do not call vulncheck_query with indices not on this list — they will fail with a tier error."
+	prompt := a.systemPrompt()
+	if a.vc != nil {
+		if avail, err := a.vc.AvailableIndices(ctx); err == nil && len(avail) > 0 {
+			names := make([]string, 0, len(avail))
+			for name := range avail {
+				names = append(names, name)
 			}
+			sort.Strings(names)
+			prompt += "\n\nVulnCheck indices available for this token: " +
+				strings.Join(names, ", ") +
+				". Do not call vulncheck_query with indices not on this list — they will fail with a tier error."
 		}
-		messages[0] = openai.SystemMessage(prompt)
+	}
+	sysMsg := openai.SystemMessage(prompt)
+	if len(messages) == 0 {
+		messages = append(messages, sysMsg)
+	} else {
+		messages[0] = sysMsg
 	}
 	messages = append(messages, openai.UserMessage(userQuestion))
 
@@ -637,7 +636,7 @@ func (a *Agent) dispatchCVEExploits(ctx context.Context, rawArgs string) (string
 	// including maturity level (poc/weaponized), tags, and dates. Querying it here
 	// gives the agent characterization data (lab PoC vs weaponized module) alongside
 	// the paid-tier operational intel indices.
-	indices := []string{"initial-access", "botnets", "ransomware", "threat-actors", "xdb"}
+	allIndices := []string{"initial-access", "botnets", "ransomware", "threat-actors", "xdb"}
 	params := url.Values{"cve": {args.CVEID}, "limit": {"5"}}
 
 	type indexResult struct {
@@ -646,12 +645,17 @@ func (a *Agent) dispatchCVEExploits(ctx context.Context, rawArgs string) (string
 		err     error
 	}
 
-	results := make([]indexResult, len(indices))
-	var wg sync.WaitGroup
-	for i, idx := range indices {
-		if !a.vc.HasIndex(ctx, idx) {
-			continue
+	// Filter to only indices this token can reach before allocating goroutines.
+	var accessible []string
+	for _, idx := range allIndices {
+		if a.vc.HasIndex(ctx, idx) {
+			accessible = append(accessible, idx)
 		}
+	}
+
+	results := make([]indexResult, len(accessible))
+	var wg sync.WaitGroup
+	for i, idx := range accessible {
 		wg.Add(1)
 		go func(i int, idx string) {
 			defer wg.Done()
@@ -666,7 +670,7 @@ func (a *Agent) dispatchCVEExploits(ctx context.Context, rawArgs string) (string
 	sb.WriteString(fmt.Sprintf("Exploit intelligence for %s:\n\n", args.CVEID))
 
 	for _, r := range results {
-		if r.name == "" || r.err != nil || len(r.entries) == 0 {
+		if r.err != nil || len(r.entries) == 0 {
 			continue
 		}
 		counts = append(counts, fmt.Sprintf("%s (%d)", r.name, len(r.entries)))

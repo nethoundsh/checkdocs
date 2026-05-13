@@ -73,10 +73,7 @@ func (s *sessionStore) cleanupLoop() {
 	}
 }
 
-const (
-	openRouterBaseURL = "https://openrouter.ai/api/v1/"
-	defaultModel      = "anthropic/claude-sonnet-4.5"
-)
+const defaultModel = "anthropic/claude-sonnet-4.5"
 
 //go:embed all:web
 var webFS embed.FS
@@ -164,6 +161,7 @@ func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *bra
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 64*1024)
 		var req chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid json body", http.StatusBadRequest)
@@ -209,7 +207,7 @@ func chatHandler(db *index.DB, defaultModel string, store *sessionStore, br *bra
 			vc = vulncheck.NewClient(vcToken)
 		}
 
-		ag := agent.New(apiKey, openRouterBaseURL, model, db, vc, br, hasResearch, log)
+		ag := agent.New(apiKey, agent.OpenRouterBaseURL, model, db, vc, br, hasResearch, log)
 
 		events := make(chan agent.Event, 16)
 		go ag.Run(r.Context(), sess, req.Question, events)

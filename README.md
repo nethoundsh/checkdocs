@@ -49,7 +49,7 @@ When the research corpus is synced, the agent gains one more tool:
 
 | Tool | What it does |
 |---|---|
-| `search_research` | BM25 search over indexed notebook content — markdown prose, HTML table data, Plotly chart titles and category labels |
+| `search_research` | BM25 search over indexed notebook content — markdown prose, code cell source (chart titles, column names, metric labels), HTML table data, Plotly chart titles and category labels, and stdout/text output |
 
 `search_research` results can then be fetched in full with `fetch_page` using the `research://` URL returned in the result, giving the agent access to complete notebook outputs including KEV statistics tables and vendor/product breakdowns.
 
@@ -310,13 +310,15 @@ The tools omit themselves gracefully at runtime. `internal/vulncheck.Client.HasI
 
 VulnCheck's open-source `vulnerability-research` repository contains Jupyter notebooks that serve as the ground truth for the platform's own published analysis. Rather than scraping a rendered website, `cmd/research-sync` reads the pre-computed cell outputs from the raw `.ipynb` JSON — no Python runtime required.
 
-Three output types are extracted:
+Five content types are extracted:
 
 - **Markdown cells** — prose context, section headings, methodology notes
+- **Code cell source** — chart titles, column names, and metric label strings that only exist as Python string literals (e.g. `title_text = "Exploitation Evidence Availability Before CISA KEV"`); this is the only way to reach content from matplotlib charts, which produce opaque PNG outputs
 - **HTML tables** (pandas `DataFrame.to_html()` outputs) — converted to pipe-delimited rows for FTS indexing; this is where the actual statistics live (CVE counts, coverage percentages, vendor breakdowns)
 - **Plotly chart titles and category labels** — chart titles describe what data is shown; `labels` arrays in treemap and bar traces carry the vendor/product/CVE category strings
+- **Stream and text/plain outputs** — stdout from `print()` calls and plain-text `execute_result` outputs (repr strings like `<Styler at 0x...>` are filtered out)
 
-PNG image outputs and binary-encoded numeric arrays (Plotly's `bdata` format) are skipped — they contain no text signal useful for search. This means matplotlib chart images aren't queryable; the agent can describe what these charts show using surrounding markdown context but cannot return the underlying data points. Plotly charts and pandas HTML tables are fully queryable — those outputs carry the actual statistics.
+PNG image outputs and binary-encoded numeric arrays (Plotly's `bdata` format) are skipped — they contain no text signal useful for search. The underlying data points in matplotlib charts are not recoverable, but their titles and axis labels are indexed via the code source. Plotly charts and pandas HTML tables are fully queryable — those outputs carry the actual statistics.
 
 Indexed pages use `research://` URL prefixes, which the `SearchResearch` index method filters on via a join predicate (`p.url LIKE 'research://%'`). The same FTS5 table and BM25 weights serve both corpora; the prefix is the only discriminator. `HasResearch()` checks at startup whether any such pages exist, so the `search_research` tool and its system prompt addendum are silently omitted when the corpus hasn't been synced — zero overhead for users who don't need it.
 
@@ -521,12 +523,6 @@ checkdocs/
 
 ## Roadmap
 
-- [x] Adapt UI to VulnCheck brand colors and visual identity
-- [x] Multi-turn conversation memory with 30-minute session TTL and "New chat" reset
-- [x] Live VulnCheck API tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`)
-- [x] Brave Search integration (`web_search`, `find_vendor_cves` composite with concurrent KEV enrichment)
-- [x] Vulnerability-research notebook ingestion (`search_research` tool, `research://` corpus alongside docs)
-- [x] Test suite for the index, scraper, and server layers
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)
 - [ ] Public deployment with rate limiting and key sandboxing

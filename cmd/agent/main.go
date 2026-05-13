@@ -17,10 +17,7 @@ import (
 	"github.com/nethoundsh/checkdocs/internal/vulncheck"
 )
 
-const (
-	openRouterBaseURL = "https://openrouter.ai/api/v1/"
-	defaultModel      = "anthropic/claude-sonnet-4.5"
-)
+const defaultModel = "anthropic/claude-sonnet-4.5"
 
 func main() {
 	dbPath := flag.String("db", "data/docs.db", "path to SQLite database")
@@ -62,7 +59,7 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	ag := agent.New(apiKey, openRouterBaseURL, *model, db, vc, br, db.HasResearch(ctx), log)
+	ag := agent.New(apiKey, agent.OpenRouterBaseURL, *model, db, vc, br, db.HasResearch(ctx), log)
 
 	events := make(chan agent.Event, 16)
 	go ag.Run(ctx, agent.NewSession(), question, events)

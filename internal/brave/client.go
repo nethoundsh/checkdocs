@@ -62,7 +62,7 @@ func (c *Client) Search(ctx context.Context, query string, count int) ([]Result,
 	case http.StatusUnauthorized:
 		return nil, fmt.Errorf("brave search: invalid API key (401)")
 	case http.StatusTooManyRequests:
-		return nil, fmt.Errorf("brave search: rate limited (429) — free tier allows 2000 queries/month")
+		return nil, fmt.Errorf("brave search: rate limited (429) — free tier allows ~1,000 queries/month ($5 credit at $5/1k)")
 	default:
 		return nil, fmt.Errorf("brave search: unexpected status %d", resp.StatusCode)
 	}

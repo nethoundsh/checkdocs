@@ -204,7 +204,23 @@ type cacheEntry struct {
 }
 
 func newResponseCache() *responseCache {
-	return &responseCache{entries: make(map[string]cacheEntry)}
+	c := &responseCache{entries: make(map[string]cacheEntry)}
+	go c.evictLoop()
+	return c
+}
+
+func (c *responseCache) evictLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	for range ticker.C {
+		now := time.Now()
+		c.mu.Lock()
+		for k, e := range c.entries {
+			if now.After(e.expires) {
+				delete(c.entries, k)
+			}
+		}
+		c.mu.Unlock()
+	}
 }
 
 func (c *responseCache) get(key string) []byte {
