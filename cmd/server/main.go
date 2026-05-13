@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+	"golang.org/x/time/rate"
 
 	"github.com/nethoundsh/checkdocs/internal/agent"
 	"github.com/nethoundsh/checkdocs/internal/brave"
@@ -75,6 +77,67 @@ func (s *sessionStore) cleanupLoop() {
 
 const defaultModel = "anthropic/claude-sonnet-4.5"
 
+// ipLimiterStore holds a per-IP token-bucket rate limiter.
+// 10 requests/minute with a burst of 10 — generous for interactive use.
+type ipLimiterStore struct {
+	mu       sync.Mutex
+	limiters map[string]*rate.Limiter
+	lastSeen map[string]time.Time
+}
+
+func newIPLimiterStore() *ipLimiterStore {
+	s := &ipLimiterStore{
+		limiters: make(map[string]*rate.Limiter),
+		lastSeen: make(map[string]time.Time),
+	}
+	go s.cleanupLoop()
+	return s
+}
+
+func (s *ipLimiterStore) get(ip string) *rate.Limiter {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if lim, ok := s.limiters[ip]; ok {
+		s.lastSeen[ip] = time.Now()
+		return lim
+	}
+	lim := rate.NewLimiter(rate.Every(time.Minute/10), 10)
+	s.limiters[ip] = lim
+	s.lastSeen[ip] = time.Now()
+	return lim
+}
+
+func (s *ipLimiterStore) cleanupLoop() {
+	for range time.NewTicker(5 * time.Minute).C {
+		s.mu.Lock()
+		for ip, t := range s.lastSeen {
+			if time.Since(t) > 15*time.Minute {
+				delete(s.limiters, ip)
+				delete(s.lastSeen, ip)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
+// rateLimitMiddleware rejects requests from IPs that exceed the rate limit.
+// Uses RemoteAddr directly; behind a trusted reverse proxy, swap for X-Real-IP.
+func rateLimitMiddleware(store *ipLimiterStore, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+		if !store.get(ip).Allow() {
+			http.Error(w, "rate limit exceeded — try again shortly", http.StatusTooManyRequests)
+			return
+		}
+		next(w, r)
+	}
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintln(w, `{"status":"ok"}`)
+}
+
 //go:embed all:web
 var webFS embed.FS
 
@@ -104,6 +167,7 @@ func main() {
 		os.Exit(1)
 	}
 	mux.Handle("/", http.FileServer(http.FS(uiFS)))
+	mux.HandleFunc("GET /health", healthHandler)
 
 	var br *brave.Client
 	if braveKey := os.Getenv("BRAVE_API_KEY"); braveKey != "" {
@@ -117,7 +181,8 @@ func main() {
 	}
 
 	store := newSessionStore()
-	mux.HandleFunc("POST /api/chat", chatHandler(db, *model, store, br, hasResearch, log))
+	limiter := newIPLimiterStore()
+	mux.HandleFunc("POST /api/chat", rateLimitMiddleware(limiter, chatHandler(db, *model, store, br, hasResearch, log)))
 
 	srv := &http.Server{
 		Addr:              *addr,

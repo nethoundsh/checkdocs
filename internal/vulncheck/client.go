@@ -100,6 +100,64 @@ func (c *Client) QueryIndex(ctx context.Context, index string, params url.Values
 	return resp.Data, nil
 }
 
+// SearchCPE returns CVEs matching the given CPE attributes (vendor, product,
+// version, part, isVulnerable). All params are optional. Available on community tier.
+func (c *Client) SearchCPE(ctx context.Context, params url.Values) ([]json.RawMessage, error) {
+	data, err := c.get(ctx, baseURL+"/search/cpe", params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse search/cpe response: %w", err)
+	}
+	return resp.Data, nil
+}
+
+// Identify converts a (vendor, product, version) tuple into canonical CPE and
+// PURL identifiers. Returns the raw JSON array from /v3/identify.
+func (c *Client) Identify(ctx context.Context, vendor, product, version string) ([]json.RawMessage, error) {
+	params := url.Values{}
+	if vendor != "" {
+		params.Set("vendor", vendor)
+	}
+	if product != "" {
+		params.Set("product", product)
+	}
+	if version != "" {
+		params.Set("version", version)
+	}
+	data, err := c.get(ctx, baseURL+"/identify", params)
+	if err != nil {
+		return nil, err
+	}
+	// /v3/identify returns a top-level JSON array, not {"data": [...]}.
+	var result []json.RawMessage
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("parse identify response: %w", err)
+	}
+	return result, nil
+}
+
+// PURLLookup returns CVEs and fixed versions for a Package URL string
+// (e.g. "pkg:npm/lodash@4.17.20"). Available on community tier.
+func (c *Client) PURLLookup(ctx context.Context, purl string) (json.RawMessage, error) {
+	params := url.Values{"purl": {purl}}
+	data, err := c.get(ctx, baseURL+"/purl", params)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("parse purl response: %w", err)
+	}
+	return resp.Data, nil
+}
+
 // DetectionRules fetches Suricata or Snort rules for a CVE from the
 // initial-access rules endpoint. format must be "suricata" or "snort".
 func (c *Client) DetectionRules(ctx context.Context, cve, format string) (string, error) {

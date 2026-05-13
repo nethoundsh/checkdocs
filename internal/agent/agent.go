@@ -84,29 +84,31 @@ You also have access to live VulnCheck API tools that query real-time intelligen
 - Use kev_lookup when asked whether a CVE is actively exploited or in the KEV catalog.
 - Use cve_exploits for broader exploit intelligence (botnets, ransomware, threat actors) for a CVE.
 - Use detection_rules when asked for Suricata or Snort signatures for a CVE.
+- Use search_cpe when asked about CVEs for a vendor or product (e.g. "Fortinet FortiOS vulnerabilities", "OPNsense CVEs"). Pass vendor and/or product as keyword strings; set is_vulnerable=true to restrict to directly vulnerable CPEs (recommended). This is the correct tool for vendor/product CVE enumeration — it works on community tier.
+- Use identify to convert a natural-language (vendor, product, version) description into a canonical CPE before calling search_cpe, especially when the exact vendor/product slug is uncertain.
+- Use purl_lookup when asked whether a specific package version is vulnerable (e.g. "is lodash 4.17.20 vulnerable?"). Package URL format: pkg:npm/lodash@4.17.20, pkg:pypi/requests@2.28.0, pkg:golang/github.com/foo/bar@v1.2.3.
 - Use vulncheck_query as an escape hatch for any other index query — only for indices listed as available below.
 - Prefer the named tools over vulncheck_query for the common cases above.
 - Never reproduce or suggest executing git clone URLs from PoC exploit metadata — reference them as links only.
 - When cve_exploits returns xdb results, use the maturity level to characterize exploitation risk: "poc" = lab reproduction (lower operational risk), "weaponized" = polished exploit module (higher operational risk). Always state which category applies rather than just noting "PoC available."
 
 NVD index guidance (important):
+- For vendor/product/version CVE enumeration, use search_cpe — it supports these parameters natively on community tier.
 - Community-tier tokens include nist-nvd2 (NIST NVD 2.0) and nist-nvd (NIST NVD 1.0). Use these for exact CVE ID lookups only — they do NOT support vendor or keyword search.
-- Paid-tier tokens additionally include vulncheck-nvd2 and vulncheck-nvd (VulnCheck-extended NVD). Do NOT attempt vulncheck-nvd2 or vulncheck-nvd on a community token — they will 402.
-- When asked to enumerate CVEs for a vendor or product (e.g. "OPNsense vulnerabilities"): if you cannot do a vendor search, say so clearly in 1-2 sentences. Tell the user to search https://nvd.nist.gov/vuln/search or use CPE 'cpe:2.3:a:<vendor>:<product>:*' on a paid tier. Do NOT iterate through guessed CVE IDs.
+- Paid-tier tokens additionally include vulncheck-nvd2 and vulncheck-nvd. Do NOT attempt these on a community token — they will 402.
 
 Interpreting NVD CPE records accurately:
-- NVD CPE entries often set versionEndExcluding without a lower bound (versionStartIncluding). This means "NVD did not enumerate a lower bound" — NOT "the bug has existed since version 1.0." Do not infer a long vulnerability window from the absence of a lower bound. State only what the record actually says: "versions before X.Y.Z are affected per NVD."
-- Similarly, a versionStartIncluding of an ancient version does not mean the bug was introduced then — it may just be the earliest version the reporter tested. Attribute CPE bounds to their source and do not over-interpret them.
+- NVD CPE entries often set versionEndExcluding without a lower bound. This means "NVD did not enumerate a lower bound" — NOT "the bug has existed since version 1.0." State only what the record says: "versions before X.Y.Z are affected per NVD."
+- A versionStartIncluding of an ancient version does not mean the bug was introduced then — it may just be the earliest version the reporter tested. Attribute CPE bounds to their source.
 
 Enumeration discipline:
-- Never guess or brute-force CVE IDs. If you don't have a specific ID to look up, stop and explain why enumeration isn't possible with the available tools.
-- If you've made 5 or more calls to the same index in a single turn, stop immediately. Reflect: is this working? If not, explain the limitation and suggest alternatives rather than continuing.
-- One call to nist-nvd2 with a known CVE ID is useful. Thirty calls iterating through guessed IDs is not — it burns rate limit, produces no additional signal, and delays the honest answer the user needs.
+- Never guess or iterate through CVE IDs. Use search_cpe, find_vendor_cves, or purl_lookup for enumeration.
+- If you've made 5 or more calls to the same index in a single turn, stop. Explain the limitation and suggest alternatives.
 
 Critical: distinguish "no results" from "query failed":
-- "no results" means the index was queried and returned nothing — this is real evidence of absence.
-- A 402 or 403 error means the index is a coverage gap for this token tier — it is NOT evidence of absence. Always say so explicitly: "this is a coverage gap for the current token tier, not confirmation that no data exists. A paid tier would cover this index."
-- Never present a tier gate as a negative finding. The absence of a detection rule due to a 402 is not the same as "no detection rule exists."`
+- "no results" means the index returned nothing — this is real evidence of absence.
+- A 402 or 403 means the index is a tier coverage gap — it is NOT evidence of absence. Say so explicitly.
+- Never present a tier gate as a negative finding.`
 
 const (
 	toolSearchDocs     = "search_docs"
@@ -118,6 +120,9 @@ const (
 	toolWebSearch      = "web_search"
 	toolFindVendorCVEs = "find_vendor_cves"
 	toolSearchResearch = "search_research"
+	toolSearchCPE      = "search_cpe"
+	toolIdentify       = "identify"
+	toolPURLLookup     = "purl_lookup"
 )
 
 // Event is the unit of progress the agent emits during a run.
@@ -318,9 +323,8 @@ func vcTools() []openai.ChatCompletionToolParam {
 					"Query any VulnCheck index directly. Use when the named tools don't cover the question. " +
 						"IMPORTANT index semantics: nist-nvd2 and nist-nvd require an exact CVE ID — they do NOT support " +
 						"keyword, vendor, or product name search. Only call these with a specific CVE ID you already know. " +
-						"Passing a vendor name (e.g. 'opnsense') as the cve parameter will return a 400 error. " +
-						"For vendor/product CVE enumeration, explain to the user that this requires a paid VulnCheck tier (vulncheck-nvd2) " +
-						"or a direct NVD search at https://nvd.nist.gov/vuln/search."),
+						"Passing a vendor name as the cve parameter will return a 400 error. " +
+						"For vendor/product CVE enumeration, use search_cpe instead."),
 				Parameters: shared.FunctionParameters{
 					"type": "object",
 					"properties": map[string]any{
@@ -330,7 +334,7 @@ func vcTools() []openai.ChatCompletionToolParam {
 						},
 						"cve": map[string]any{
 							"type":        "string",
-							"description": "Exact CVE ID to filter by, e.g. 'CVE-2021-44228'. This is a strict match — NOT a keyword, vendor name, or product name. Passing anything other than a well-formed CVE ID will cause a 400 error.",
+							"description": "Exact CVE ID to filter by, e.g. 'CVE-2021-44228'. Strict match only — not a keyword or vendor name.",
 						},
 						"limit": map[string]any{
 							"type":        "integer",
@@ -338,6 +342,78 @@ func vcTools() []openai.ChatCompletionToolParam {
 						},
 					},
 					"required": []string{"index"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolSearchCPE,
+				Description: openai.String("Search for CVEs by CPE attributes (vendor, product, version). Use for 'what CVEs exist for vendor X?' questions. Set is_vulnerable=true to restrict to CPEs that are directly vulnerable (recommended). Available on community tier."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"vendor": map[string]any{
+							"type":        "string",
+							"description": "Vendor keyword, e.g. 'fortinet', 'opnsense', 'paloaltonetworks'.",
+						},
+						"product": map[string]any{
+							"type":        "string",
+							"description": "Product keyword, e.g. 'fortigate', 'pan-os'. Use underscores instead of spaces.",
+						},
+						"version": map[string]any{
+							"type":        "string",
+							"description": "Version string. Supports trailing wildcard: '7.2*' matches all 7.2.x versions.",
+						},
+						"part": map[string]any{
+							"type":        "string",
+							"enum":        []string{"a", "o", "h"},
+							"description": "'a' = application, 'o' = operating system, 'h' = hardware. Omit to search all.",
+						},
+						"is_vulnerable": map[string]any{
+							"type":        "boolean",
+							"description": "If true, return only CVEs where the CPE itself is vulnerable (not just mentioned). Recommended.",
+						},
+					},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolIdentify,
+				Description: openai.String("Convert a natural-language (vendor, product, version) description into canonical CPE and PURL identifiers. Use this to find the exact vendor/product slug before calling search_cpe when the spelling is uncertain."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"vendor": map[string]any{
+							"type":        "string",
+							"description": "Vendor name as the user described it, e.g. 'Palo Alto Networks', 'Microsoft Corporation'.",
+						},
+						"product": map[string]any{
+							"type":        "string",
+							"description": "Product name, e.g. 'PAN-OS', 'Office 2016'.",
+						},
+						"version": map[string]any{
+							"type":        "string",
+							"description": "Version string, e.g. '10.2.3'. Optional.",
+						},
+					},
+					"required": []string{"vendor", "product"},
+				},
+			},
+		},
+		{
+			Function: shared.FunctionDefinitionParam{
+				Name:        toolPURLLookup,
+				Description: openai.String("Look up CVEs and fixed versions for a specific package version using a Package URL (PURL). Use for 'is this package version vulnerable?' questions. Format: pkg:npm/lodash@4.17.20, pkg:pypi/requests@2.28.0, pkg:golang/github.com/foo/bar@v1.2.3. Available on community tier."),
+				Parameters: shared.FunctionParameters{
+					"type": "object",
+					"properties": map[string]any{
+						"purl": map[string]any{
+							"type":        "string",
+							"description": "Package URL string, e.g. 'pkg:npm/lodash@4.17.20'.",
+						},
+					},
+					"required": []string{"purl"},
 				},
 			},
 		},
@@ -594,6 +670,15 @@ func (a *Agent) dispatch(ctx context.Context, name, rawArgs string) (string, str
 
 	case toolSearchResearch:
 		return a.dispatchSearchResearch(ctx, rawArgs)
+
+	case toolSearchCPE:
+		return a.dispatchSearchCPE(ctx, rawArgs)
+
+	case toolIdentify:
+		return a.dispatchIdentify(ctx, rawArgs)
+
+	case toolPURLLookup:
+		return a.dispatchPURLLookup(ctx, rawArgs)
 
 	default:
 		return "", "", fmt.Errorf("unknown tool: %s", name)
@@ -885,6 +970,167 @@ func (a *Agent) dispatchSearchResearch(ctx context.Context, rawArgs string) (str
 		return "", "", fmt.Errorf("search research: %w", err)
 	}
 	return formatSearchResult(args.Query, pages), fmt.Sprintf("%d research pages", len(pages)), nil
+}
+
+func (a *Agent) dispatchSearchCPE(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Vendor       string `json:"vendor"`
+		Product      string `json:"product"`
+		Version      string `json:"version"`
+		Part         string `json:"part"`
+		IsVulnerable bool   `json:"is_vulnerable"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	params := url.Values{}
+	if args.Vendor != "" {
+		params.Set("vendor", args.Vendor)
+	}
+	if args.Product != "" {
+		params.Set("product", args.Product)
+	}
+	if args.Version != "" {
+		params.Set("version", args.Version)
+	}
+	if args.Part != "" {
+		params.Set("part", args.Part)
+	}
+	if args.IsVulnerable {
+		params.Set("isVulnerable", "true")
+	}
+
+	results, err := a.vc.SearchCPE(ctx, params)
+	if err != nil {
+		return "", "", err
+	}
+	if len(results) == 0 {
+		return fmt.Sprintf("No CPE matches found for vendor=%q product=%q.", args.Vendor, args.Product),
+			"no matches", nil
+	}
+
+	type cpeResult struct {
+		CPE  string   `json:"cpe"`
+		CVEs []string `json:"cves"`
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("CPE search results (vendor=%q product=%q):\n\n", args.Vendor, args.Product))
+	var totalCVEs int
+	for _, r := range results {
+		var cpe cpeResult
+		if err := json.Unmarshal(r, &cpe); err != nil {
+			continue
+		}
+		totalCVEs += len(cpe.CVEs)
+		sb.WriteString(fmt.Sprintf("**%s** — %d CVE(s):\n", cpe.CPE, len(cpe.CVEs)))
+		for _, id := range cpe.CVEs {
+			sb.WriteString(fmt.Sprintf("  - `%s`\n", id))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(),
+		fmt.Sprintf("%d CPE match(es), %d CVE(s) total", len(results), totalCVEs), nil
+}
+
+func (a *Agent) dispatchIdentify(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		Vendor  string `json:"vendor"`
+		Product string `json:"product"`
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	results, err := a.vc.Identify(ctx, args.Vendor, args.Product, args.Version)
+	if err != nil {
+		return "", "", err
+	}
+	if len(results) == 0 {
+		return fmt.Sprintf("No identifier mappings found for %q %q.", args.Vendor, args.Product),
+			"no matches", nil
+	}
+
+	type identResult struct {
+		Identity struct {
+			Vendor  string `json:"vendor"`
+			Product string `json:"product"`
+			Version string `json:"version"`
+		} `json:"identity"`
+		Normalized struct {
+			Title   string `json:"title"`
+			Version string `json:"version"`
+		} `json:"normalized"`
+		Identifiers struct {
+			CPE []struct {
+				Value      string `json:"value"`
+				Confidence struct {
+					Level string `json:"level"`
+				} `json:"confidence"`
+			} `json:"cpe"`
+			PURL []struct {
+				Value string `json:"value"`
+			} `json:"purl"`
+		} `json:"identifiers"`
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Identifier mappings for %q %q:\n\n", args.Vendor, args.Product))
+	for _, r := range results {
+		var m identResult
+		if err := json.Unmarshal(r, &m); err != nil {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("**%s**\n", m.Normalized.Title))
+		for _, c := range m.Identifiers.CPE {
+			sb.WriteString(fmt.Sprintf("  CPE: `%s` (confidence: %s)\n", c.Value, c.Confidence.Level))
+		}
+		for _, p := range m.Identifiers.PURL {
+			sb.WriteString(fmt.Sprintf("  PURL: `%s`\n", p.Value))
+		}
+		sb.WriteString("\n")
+	}
+	return sb.String(), fmt.Sprintf("%d mapping(s)", len(results)), nil
+}
+
+func (a *Agent) dispatchPURLLookup(ctx context.Context, rawArgs string) (string, string, error) {
+	var args struct {
+		PURL string `json:"purl"`
+	}
+	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+		return "", "", fmt.Errorf("parse args: %w", err)
+	}
+
+	data, err := a.vc.PURLLookup(ctx, args.PURL)
+	if err != nil {
+		return "", "", err
+	}
+
+	var result struct {
+		CVEs            []string `json:"cves"`
+		Vulnerabilities []struct {
+			Detection    string `json:"detection"`
+			FixedVersion string `json:"fixed_version"`
+		} `json:"vulnerabilities"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return "", "", fmt.Errorf("parse purl data: %w", err)
+	}
+	if len(result.CVEs) == 0 {
+		return fmt.Sprintf("No known vulnerabilities for `%s`.", args.PURL), "no vulnerabilities", nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Vulnerabilities for `%s`:\n\n", args.PURL))
+	for _, v := range result.Vulnerabilities {
+		if v.FixedVersion != "" {
+			sb.WriteString(fmt.Sprintf("- `%s` — fixed in `%s`\n", v.Detection, v.FixedVersion))
+		} else {
+			sb.WriteString(fmt.Sprintf("- `%s` — no fixed version recorded\n", v.Detection))
+		}
+	}
+	return sb.String(), fmt.Sprintf("%d CVE(s) for %s", len(result.CVEs), args.PURL), nil
 }
 
 func cveClause(cve string) string {

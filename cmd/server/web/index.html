@@ -4,9 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>checkdocs · VulnCheck docs assistant</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap">
 <style>
   :root {
     /* backgrounds */
@@ -41,7 +38,7 @@
 
     /* typography */
     --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
-    --sans: Inter, ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --sans: ui-sans-serif, system-ui, -apple-system, sans-serif;
   }
 
   * { box-sizing: border-box; }
@@ -96,6 +93,16 @@
     display: flex; align-items: center; gap: 6px;
   }
   .btn-settings:hover { border-color: var(--accent-primary); color: var(--fg); }
+
+  .btn-export {
+    background: transparent; color: var(--fg-muted);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 5px 12px; font-size: 13px; cursor: pointer;
+    font-family: var(--sans); white-space: nowrap;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn-export:hover:not(:disabled) { border-color: var(--accent-primary); color: var(--fg); }
+  .btn-export:disabled { opacity: 0.3; cursor: not-allowed; }
 
   .key-dot {
     width: 6px; height: 6px; border-radius: 50%;
@@ -280,13 +287,15 @@
     display: flex; gap: 8px;
     max-width: 760px; margin: 0 auto;
   }
-  .input-row input[type="text"] {
+  .input-row textarea {
     flex: 1; background: var(--bg-elevated); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
     padding: 10px 14px; font-family: var(--mono); font-size: 14px;
     transition: border-color 0.15s;
+    resize: none; overflow-y: hidden; line-height: 1.5;
+    min-height: 42px; max-height: 200px;
   }
-  .input-row input[type="text"]:focus { outline: none; border-color: var(--accent-primary); }
+  .input-row textarea:focus { outline: none; border-color: var(--accent-primary); }
   .input-row button[type="submit"] {
     background: var(--accent-primary); color: #fff; border: 0; border-radius: 4px;
     padding: 0 22px; font-family: var(--sans); font-weight: 600; font-size: 14px;
@@ -317,6 +326,7 @@
       <option value="google/gemini-2.5-flash">gemini-2.5-flash</option>
       <option value="openai/gpt-4o-mini">gpt-4o-mini</option>
     </select>
+    <button class="btn-export" id="export-btn" disabled title="Export conversation as Markdown">Export</button>
     <button class="btn-settings" id="settings-btn">
       <span class="key-dot" id="key-dot"></span>Keys
     </button>
@@ -353,43 +363,44 @@
 <footer>
   <form id="chatform">
     <div class="input-row">
-      <input type="text" id="question" placeholder="Ask about VulnCheck docs and intelligence…" autocomplete="off" required>
+      <textarea id="question" rows="1" placeholder="Ask about VulnCheck docs and intelligence… (Enter to send, Shift+Enter for newline)" autocomplete="off" required></textarea>
       <button type="submit" id="submit">Send</button>
     </div>
   </form>
 </footer>
 
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="/marked.min.js"></script>
 <script>
 (() => {
-  const transcript   = document.getElementById('transcript');
-  const form         = document.getElementById('chatform');
-  const questionEl   = document.getElementById('question');
-  const apikeyEl     = document.getElementById('apikey');
-  const modelEl      = document.getElementById('model');
-  const submitBtn    = document.getElementById('submit');
-  const newChatBtn   = document.getElementById('newchat');
-  const vctokenEl    = document.getElementById('vctoken');
-  const settingsBtn  = document.getElementById('settings-btn');
+  const transcript    = document.getElementById('transcript');
+  const form          = document.getElementById('chatform');
+  const questionEl    = document.getElementById('question');
+  const apikeyEl      = document.getElementById('apikey');
+  const modelEl       = document.getElementById('model');
+  const submitBtn     = document.getElementById('submit');
+  const newChatBtn    = document.getElementById('newchat');
+  const exportBtn     = document.getElementById('export-btn');
+  const vctokenEl     = document.getElementById('vctoken');
+  const settingsBtn   = document.getElementById('settings-btn');
   const settingsModal = document.getElementById('settings-modal');
-  const settingsDone = document.getElementById('settings-done');
-  const keyDot       = document.getElementById('key-dot');
+  const settingsDone  = document.getElementById('settings-done');
+  const keyDot        = document.getElementById('key-dot');
 
   let currentSessionID = null;
 
-  // Restore saved preferences.
-  apikeyEl.value = sessionStorage.getItem('orkey') || '';
-  modelEl.value  = sessionStorage.getItem('model') || modelEl.value;
-  vctokenEl.value = sessionStorage.getItem('vctoken') || '';
+  // Restore saved preferences from localStorage (persists across browser sessions).
+  apikeyEl.value  = localStorage.getItem('orkey') || '';
+  modelEl.value   = localStorage.getItem('model') || modelEl.value;
+  vctokenEl.value = localStorage.getItem('vctoken') || '';
 
   function updateKeyDot() {
     keyDot.classList.toggle('active', !!apikeyEl.value.trim());
   }
   updateKeyDot();
 
-  apikeyEl.addEventListener('input', () => { sessionStorage.setItem('orkey', apikeyEl.value); updateKeyDot(); });
-  modelEl.addEventListener('change', () => sessionStorage.setItem('model', modelEl.value));
-  vctokenEl.addEventListener('input', () => sessionStorage.setItem('vctoken', vctokenEl.value));
+  apikeyEl.addEventListener('input', () => { localStorage.setItem('orkey', apikeyEl.value); updateKeyDot(); });
+  modelEl.addEventListener('change', () => localStorage.setItem('model', modelEl.value));
+  vctokenEl.addEventListener('input', () => localStorage.setItem('vctoken', vctokenEl.value));
 
   // Settings modal.
   settingsBtn.addEventListener('click', () => { settingsModal.hidden = false; apikeyEl.focus(); });
@@ -399,8 +410,45 @@
 
   newChatBtn.addEventListener('click', () => {
     currentSessionID = null;
+    exportBtn.disabled = true;
     transcript.innerHTML = `<div class="empty-state">Click <strong>Keys</strong> to add your OpenRouter API key, then ask anything.<br>Try: <em>"Are there OPNsense vulnerabilities in the KEV?"</em> or <em>"Summarize Initial Access Intelligence."</em></div>`;
     questionEl.focus();
+  });
+
+  // Auto-resize textarea as the user types.
+  questionEl.addEventListener('input', () => {
+    questionEl.style.height = 'auto';
+    questionEl.style.height = Math.min(questionEl.scrollHeight, 200) + 'px';
+  });
+
+  // Submit on Enter; Shift+Enter inserts a newline.
+  questionEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  });
+
+  // Export conversation as a Markdown file.
+  exportBtn.addEventListener('click', () => {
+    let md = `# VulnCheck Research Session\n*Exported ${new Date().toLocaleString()}*\n\n---\n\n`;
+    for (const turn of transcript.querySelectorAll('.turn')) {
+      if (turn.classList.contains('user')) {
+        md += `**You:** ${turn.querySelector('.bubble').textContent}\n\n`;
+      } else {
+        const raw = turn.querySelector('.answer')?.dataset.raw;
+        if (raw) md += raw + '\n\n---\n\n';
+      }
+    }
+    const blob = new Blob([md.trim()], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `checkdocs-${Date.now()}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   marked.setOptions({ breaks: true, gfm: true });
@@ -486,6 +534,7 @@
       },
       onToken(text) {
         raw += text;
+        answer.dataset.raw = raw;
         answer.innerHTML = sanitizeResearchLinks(marked.parse(normalizeMarkdown(raw)));
       },
       onError(msg) {
@@ -517,6 +566,7 @@
     addUserTurn(question);
     const turn = addAssistantTurn();
     questionEl.value = '';
+    questionEl.style.height = '';
     submitBtn.disabled = true;
 
     try {
@@ -551,6 +601,7 @@
       turn.onError(err.message || String(err));
     } finally {
       submitBtn.disabled = false;
+      exportBtn.disabled = false;
       questionEl.focus();
     }
   });

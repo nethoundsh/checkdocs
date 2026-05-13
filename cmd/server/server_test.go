@@ -76,6 +76,52 @@ func TestWriteSSE(t *testing.T) {
 	}
 }
 
+// TestHealthHandler verifies the health endpoint returns 200 with JSON status ok.
+func TestHealthHandler(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rr := httptest.NewRecorder()
+	healthHandler(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Errorf("health: got %d, want 200", rr.Code)
+	}
+	var body map[string]string
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("health: body not JSON: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf("health: status=%q, want ok", body["status"])
+	}
+}
+
+// TestRateLimitMiddleware verifies that IPs exceeding burst are rejected with 429.
+func TestRateLimitMiddleware(t *testing.T) {
+	store := newIPLimiterStore()
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := rateLimitMiddleware(store, inner)
+
+	ip := "1.2.3.4:9999"
+	// Drain the full burst (10 requests) — all should pass.
+	for i := 0; i < 10; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+		req.RemoteAddr = ip
+		rr := httptest.NewRecorder()
+		handler(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("request %d: got %d, want 200", i+1, rr.Code)
+		}
+	}
+	// 11th request must be rejected.
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", nil)
+	req.RemoteAddr = ip
+	rr := httptest.NewRecorder()
+	handler(rr, req)
+	if rr.Code != http.StatusTooManyRequests {
+		t.Errorf("11th request: got %d, want 429", rr.Code)
+	}
+}
+
 // TestChatHandlerValidation checks all early-return error paths that fire
 // before the agent is ever created — no OpenRouter call is made.
 func TestChatHandlerValidation(t *testing.T) {
