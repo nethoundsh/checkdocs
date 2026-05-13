@@ -25,7 +25,7 @@ VulnCheck publishes excellent documentation and intelligence data, but answering
 
 A second corpus — VulnCheck's open-source [vulnerability-research](https://github.com/vulncheck-oss/vulnerability-research) Jupyter notebooks — can be indexed alongside the docs. These notebooks contain KEV dashboards, exploitation timeline analysis, initial access coverage stats, canary detection metrics, reserved-but-exploited CVE lists, and trending data. Once synced, the agent can answer data questions like "how many CVEs were added to KEV in 2025?" or "which vendors have the most exploited CVEs?" by reading the notebook outputs directly.
 
-With a VulnCheck API token, the agent gains four additional live-data tools that query `api.vulncheck.com/v3/` directly:
+With a VulnCheck API token, the agent gains seven additional live-data tools that query `api.vulncheck.com/v3/` directly:
 
 | Tool | What it answers |
 |---|---|
@@ -33,6 +33,9 @@ With a VulnCheck API token, the agent gains four additional live-data tools that
 | `cve_exploits` | What botnets, ransomware families, or threat actors exploit this CVE? (queries available indices concurrently) |
 | `detection_rules` | Give me Suricata or Snort rules for this CVE |
 | `vulncheck_query` | Escape hatch — query any index by name with arbitrary parameters |
+| `search_cpe` | Enumerate CVEs for a vendor, product, or version — CPE-based search across VulnCheck's coverage |
+| `identify` | Convert a vendor/product/version into canonical CPE and PURL identifiers |
+| `purl_lookup` | Look up CVEs and fixed versions for a Package URL (e.g. `pkg:npm/lodash@4.17.20`) |
 
 Without a VulnCheck token the tool surface is docs-only; the live tools are silently omitted from the agent's tool list.
 
@@ -43,7 +46,7 @@ With a Brave Search API key, the agent gains two additional tools:
 | `web_search` | General web search — recent CVE disclosures, threat context, news about a CVE or threat actor |
 | `find_vendor_cves` | Composite: searches the web for `{vendor} CVE {year}`, extracts CVE IDs from results, and enriches each with VulnCheck KEV status (if a VulnCheck token is also present) |
 
-`find_vendor_cves` is the correct tool for "are there any OPNsense vulnerabilities?" style questions — it replaces the brute-force CVE ID enumeration pattern that a model without web access would otherwise attempt.
+`find_vendor_cves` is the right tool for broad vendor CVE discovery when only a Brave key is present. When a VulnCheck token is also available, `search_cpe` is the preferred approach for querying VulnCheck's coverage directly — it's faster and returns structured CPE/KEV data without web scraping.
 
 When the research corpus is synced, the agent gains one more tool:
 
@@ -228,6 +231,7 @@ open http://localhost:8080
 │  Live tools (when VulnCheck token present):                  │
 │    kev_lookup      cve_exploits                              │
 │    detection_rules vulncheck_query                           │
+│    search_cpe      identify       purl_lookup                │
 │          │                                                   │
 │          └── internal/vulncheck  ─────────────────────────┐ │
 │               • 10-min response cache                      │ │
@@ -302,7 +306,9 @@ level=INFO msg=chat model=anthropic/claude-sonnet-4.5 q_len=47
 
 ### 5. VulnCheck API tools — named tools for the 80% case, escape hatch for the rest
 
-Four live-data tools extend the agent when a VulnCheck API token is present. The design follows a hybrid pattern: named, purpose-built tools (`kev_lookup`, `cve_exploits`, `detection_rules`) cover the most common intelligence queries with clean, constrained inputs; `vulncheck_query` serves as an escape hatch for anything not covered, accepting an arbitrary index name and parameters.
+Seven live-data tools extend the agent when a VulnCheck API token is present. The design follows a hybrid pattern: named, purpose-built tools cover the most common intelligence queries with clean, constrained inputs; `vulncheck_query` serves as an escape hatch for anything not covered, accepting an arbitrary index name and parameters.
+
+The core exploitation tools (`kev_lookup`, `cve_exploits`, `detection_rules`) answer questions about a known CVE. Three supplementary tools handle package and product enumeration: `search_cpe` queries VulnCheck's CPE index by vendor, product, or version; `identify` converts a vendor/product/version tuple into canonical CPE and PURL identifiers via `/v3/identify`; `purl_lookup` accepts a Package URL string and returns CVEs and fixed versions via `/v3/purl`.
 
 The tools omit themselves gracefully at runtime. `internal/vulncheck.Client.HasIndex()` checks the authenticated token's available indices via a lazy GET `/v3/index` call (cached for the session lifetime). `cve_exploits` queries whichever of `xdb`, `initial-access`, `botnets`, `ransomware`, and `threat-actors` the token can reach, concurrently, using a `sync.WaitGroup`. Tier restrictions surface as explicit error messages — "this is a coverage gap for the current token tier, not confirmation that no data exists" — rather than silent empty results, so the model explains the limitation accurately rather than hallucinating an absence.
 
@@ -347,7 +353,6 @@ Brave is a server-side capability (`BRAVE_API_KEY` in the server's env), not BYO
 - An optional **[VulnCheck](https://vulncheck.com) API token** — enables live intelligence tools (`kev_lookup`, `cve_exploits`, `detection_rules`, `vulncheck_query`); without it the agent is docs-only
 - An optional **[Brave Search](https://api-dashboard.search.brave.com/) API key** — enables `web_search` and `find_vendor_cves`; pricing is credit-based ($5/1,000 requests), with $5 free monthly credit if you attribute Brave Search on your project
 - No cgo or system SQLite installation required — `modernc.org/sqlite` is a pure Go SQLite implementation compiled directly into the binary
-- The web UI fetches two CDN assets at runtime: Inter from Google Fonts and `marked.js` from jsDelivr (for markdown rendering). The CLI has no such dependency.
 
 ---
 
@@ -395,6 +400,9 @@ Environment:
 ### API
 
 ```
+GET /health
+Response: 200 OK, {"status":"ok"}
+
 POST /api/chat
 Headers:
   Content-Type: application/json
@@ -405,6 +413,7 @@ Body:
   { "question": "string", "model": "string (optional)", "session_id": "string (optional)" }
 
 Response: text/event-stream
+Rate limit: 10 requests/minute per IP (burst of 10)
 ```
 
 SSE event types:
@@ -475,13 +484,13 @@ Any `openai`-compatible model slug from OpenRouter can be passed via `-model` on
 go test ./...
 ```
 
-28 tests across four packages, no external dependencies required:
+30 tests across four packages, no external dependencies required:
 
 | Package | Tests | What's covered |
 |---|---|---|
 | `cmd/scraper` | 3 | `deriveHumanURL`, `breadcrumbFromURL`, `titleCase` — pure URL and string transforms |
 | `internal/index` | 11 | Upsert/get roundtrip, nil-on-miss, idempotency, FTS trigger sync, search, empty search, BM25 title-ranking, limit enforcement, `HasResearch`, `SearchResearch` corpus isolation, `SearchResearch` empty |
-| `cmd/server` | 5 | SSE wire format (`writeSSE`), all four HTTP validation paths in `chatHandler` (missing key → 401, bad JSON → 400, empty question → 400, over-length → 400), and the 8000-char boundary |
+| `cmd/server` | 7 | SSE wire format (`writeSSE`), health endpoint (200 + JSON body), per-IP rate limiter (burst drain + 429 on overflow), all HTTP validation paths in `chatHandler` (missing key → 401, bad JSON → 400, empty question → 400, over-length → 400), and the 8000-char boundary |
 | `internal/research` | 12 | `joinSource` (array + string forms), HTML table → markdown conversion, `parsePlotlyTitle` (string, object, and null forms), `toTitle`, `ParseFile` title extraction (H1, H2 fallback, filename fallback), HTML table content in index, Plotly title and label extraction, binary `bdata` values handled safely, `Walk` checkpoint directory exclusion |
 
 The `internal/index` and `internal/research` tests run against real SQLite files in temp directories — no mocking — so the FTS triggers, BM25 ranking weights, and notebook parsing logic are exercised exactly as they run in production.
@@ -516,7 +525,7 @@ checkdocs/
 - **Lexical search only.** BM25 does not handle paraphrase queries well — "how do I authenticate?" won't rank as highly as a search for "authentication bearer token." Semantic/hybrid search is on the roadmap.
 - **LLM can still hallucinate.** When source material is sparse or ambiguous, the model may fill gaps with plausible but unverified claims. Every factual claim in the output should carry an inline citation; treat uncited claims with skepticism.
 - **VulnCheck community tier covers a limited index set.** `initial-access`, `botnets`, `ransomware`, `threat-actors`, and detection rules all require a paid VulnCheck tier. The agent surfaces 402 responses as tier limitations rather than empty results, so the model can explain the gap rather than imply absence — but the coverage gap itself is real.
-- **Brave is credit-based.** The free monthly credit is roughly 1,000 queries. High-volume use requires a paid plan; the server has no built-in rate-limit guard against exhausting the quota.
+- **Brave is credit-based.** The free monthly credit is roughly 1,000 queries. High-volume use requires a paid plan.
 - **Notebook corpus reflects the last sync.** Research notebooks are indexed on demand via `research-sync`; the agent does not auto-pull updates. Answers drawn from the research corpus may be stale if notebooks have been updated since the last sync.
 
 ---
@@ -525,7 +534,7 @@ checkdocs/
 
 - [ ] Semantic/hybrid search (BM25 + embeddings) for better recall on paraphrase queries
 - [ ] Automatic re-indexing on a schedule (cron or webhook trigger from docs deploys)
-- [ ] Public deployment with rate limiting and key sandboxing
+- [ ] Public deployment with key sandboxing
 
 ---
 
