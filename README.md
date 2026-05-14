@@ -485,7 +485,7 @@ Any `openai`-compatible model slug from OpenRouter can be passed via `-model` on
 go test ./...
 ```
 
-30 tests across four packages, no external dependencies required:
+43 tests across six packages, no external dependencies required:
 
 | Package | Tests | What's covered |
 |---|---|---|
@@ -493,6 +493,8 @@ go test ./...
 | `internal/index` | 11 | Upsert/get roundtrip, nil-on-miss, idempotency, FTS trigger sync, search, empty search, BM25 title-ranking, limit enforcement, `HasResearch`, `SearchResearch` corpus isolation, `SearchResearch` empty |
 | `cmd/server` | 7 | SSE wire format (`writeSSE`), health endpoint (200 + JSON body), per-IP rate limiter (burst drain + 429 on overflow), all HTTP validation paths in `chatHandler` (missing key → 401, bad JSON → 400, empty question → 400, over-length → 400), and the 8000-char boundary |
 | `internal/research` | 12 | `joinSource` (array + string forms), HTML table → markdown conversion, `parsePlotlyTitle` (string, object, and null forms), `toTitle`, `ParseFile` title extraction (H1, H2 fallback, filename fallback), HTML table content in index, Plotly title and label extraction, binary `bdata` values handled safely, `Walk` checkpoint directory exclusion |
+| `internal/vulncheck` | 7 | Response cache hit/miss, expired-entry eviction, terminal HTTP errors (401/402/403/404 return immediately without retry), `SearchCPE` response parsing, `Identify` top-level array parsing, `PURLLookup` envelope unwrapping, `AvailableIndices` fetch-once caching |
+| `internal/agent` | 6 | Tool list construction for all combinations of enabled clients (doc-only, vc, brave, research, all), CVE ID regex correctness (valid formats, short IDs, invalid prefixes) |
 
 The `internal/index` and `internal/research` tests run against real SQLite files in temp directories — no mocking — so the FTS triggers, BM25 ranking weights, and notebook parsing logic are exercised exactly as they run in production.
 
