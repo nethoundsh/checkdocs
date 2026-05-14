@@ -598,6 +598,7 @@ func (a *Agent) Run(ctx context.Context, sess *Session, userQuestion string, out
 				defer wg.Done()
 				result, summary, err := a.dispatch(ctx, tc.Function.Name, tc.Function.Arguments)
 				if err != nil {
+					a.log.Warn("tool error", "tool", tc.Function.Name, "err", err)
 					result = fmt.Sprintf("error: %v", err)
 					summary = result
 				}
