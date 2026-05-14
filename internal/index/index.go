@@ -198,7 +198,7 @@ func (db *DB) SearchResearch(ctx context.Context, query string, limit int) ([]Pa
 // sanitizeFTSQuery escapes FTS5 query syntax. Each whitespace-separated token
 // is wrapped in double quotes (with internal quotes doubled per FTS5 rules)
 // so characters like '-', ':', '(', ')', and operator keywords are treated
-// literally. Tokens are joined with implicit AND.
+// literally. Tokens are joined with OR so any token match returns results.
 func sanitizeFTSQuery(q string) string {
 	q = strings.TrimSpace(q)
 	if q == "" {
@@ -211,5 +211,5 @@ func sanitizeFTSQuery(q string) string {
 		p = strings.ReplaceAll(p, `"`, `""`) // double internal quotes
 		parts[i] = `"` + p + `"`
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " OR ")
 }

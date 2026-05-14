@@ -311,6 +311,50 @@ func TestSearchResearchEmpty(t *testing.T) {
 	}
 }
 
+// TestSearchMultiTokenOR verifies that a multi-word query returns results when
+// each token appears in a different document (OR semantics). Under the old AND
+// semantics both documents would have been silently excluded.
+func TestSearchMultiTokenOR(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	// Two research pages: each contains only one of the two query tokens.
+	if err := db.Upsert(ctx, Page{
+		URL:     "research://notebook/memory.ipynb",
+		Title:   "Memory Management",
+		Content: "strategies for memory allocation and garbage collection",
+	}, now); err != nil {
+		t.Fatalf("upsert memory page: %v", err)
+	}
+	if err := db.Upsert(ctx, Page{
+		URL:     "research://notebook/leak.ipynb",
+		Title:   "Resource Leaks",
+		Content: "detecting and fixing resource leaks in long-running processes",
+	}, now); err != nil {
+		t.Fatalf("upsert leak page: %v", err)
+	}
+
+	results, err := db.SearchResearch(ctx, "memory leak", 5)
+	if err != nil {
+		t.Fatalf("SearchResearch: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected results for multi-token query with OR semantics, got none")
+	}
+
+	urls := make(map[string]bool, len(results))
+	for _, r := range results {
+		urls[r.URL] = true
+	}
+	if !urls["research://notebook/memory.ipynb"] {
+		t.Error("memory.ipynb missing from results")
+	}
+	if !urls["research://notebook/leak.ipynb"] {
+		t.Error("leak.ipynb missing from results")
+	}
+}
+
 func TestSearchLimitRespected(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
