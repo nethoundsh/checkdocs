@@ -13,15 +13,16 @@ import (
 )
 
 const (
-	baseURL    = "https://api.vulncheck.com/v3"
-	cacheTTL   = 10 * time.Minute
-	maxRetries = 3
+	defaultBaseURL = "https://api.vulncheck.com/v3"
+	cacheTTL       = 10 * time.Minute
+	maxRetries     = 3
 )
 
 // Client is a thread-safe VulnCheck API client with response caching and
 // exponential backoff on rate-limit and server errors.
 type Client struct {
 	token     string
+	baseURL   string // API base, without trailing slash; defaults to defaultBaseURL
 	http      *http.Client
 	cache     *responseCache
 	available map[string]bool // populated lazily via /v3/index
@@ -32,9 +33,10 @@ type Client struct {
 // NewClient constructs a Client. token is a VulnCheck Bearer token.
 func NewClient(token string) *Client {
 	return &Client{
-		token: token,
-		http:  &http.Client{Timeout: 15 * time.Second},
-		cache: newResponseCache(),
+		token:   token,
+		baseURL: defaultBaseURL,
+		http:    &http.Client{Timeout: 15 * time.Second},
+		cache:   newResponseCache(),
 	}
 }
 
@@ -43,7 +45,7 @@ func NewClient(token string) *Client {
 func (c *Client) AvailableIndices(ctx context.Context) (map[string]bool, error) {
 	var fetchErr error
 	c.availOnce.Do(func() {
-		data, err := c.get(ctx, baseURL+"/index", nil)
+		data, err := c.get(ctx, c.baseURL+"/index", nil)
 		if err != nil {
 			fetchErr = err
 			return
@@ -86,7 +88,7 @@ func (c *Client) HasIndex(ctx context.Context, name string) bool {
 // QueryIndex queries a named index and returns the raw data entries as JSON
 // objects. params may include "cve", "limit", "page", etc.
 func (c *Client) QueryIndex(ctx context.Context, index string, params url.Values) ([]json.RawMessage, error) {
-	u := baseURL + "/index/" + index
+	u := c.baseURL + "/index/" + index
 	data, err := c.get(ctx, u, params)
 	if err != nil {
 		return nil, err
@@ -103,7 +105,7 @@ func (c *Client) QueryIndex(ctx context.Context, index string, params url.Values
 // SearchCPE returns CVEs matching the given CPE attributes (vendor, product,
 // version, part, isVulnerable). All params are optional. Available on community tier.
 func (c *Client) SearchCPE(ctx context.Context, params url.Values) ([]json.RawMessage, error) {
-	data, err := c.get(ctx, baseURL+"/search/cpe", params)
+	data, err := c.get(ctx, c.baseURL+"/search/cpe", params)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +131,7 @@ func (c *Client) Identify(ctx context.Context, vendor, product, version string) 
 	if version != "" {
 		params.Set("version", version)
 	}
-	data, err := c.get(ctx, baseURL+"/identify", params)
+	data, err := c.get(ctx, c.baseURL+"/identify", params)
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +147,7 @@ func (c *Client) Identify(ctx context.Context, vendor, product, version string) 
 // (e.g. "pkg:npm/lodash@4.17.20"). Available on community tier.
 func (c *Client) PURLLookup(ctx context.Context, purl string) (json.RawMessage, error) {
 	params := url.Values{"purl": {purl}}
-	data, err := c.get(ctx, baseURL+"/purl", params)
+	data, err := c.get(ctx, c.baseURL+"/purl", params)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +166,7 @@ func (c *Client) DetectionRules(ctx context.Context, cve, format string) (string
 	if format != "suricata" && format != "snort" {
 		return "", fmt.Errorf("format must be 'suricata' or 'snort', got %q", format)
 	}
-	u := fmt.Sprintf("%s/rules/initial-access/%s", baseURL, format)
+	u := fmt.Sprintf("%s/rules/initial-access/%s", c.baseURL, format)
 	params := url.Values{"cve": {cve}}
 	data, err := c.get(ctx, u, params)
 	if err != nil {
