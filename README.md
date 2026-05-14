@@ -448,7 +448,13 @@ The index automatically stays in sync via SQLite triggers: insert/update/delete 
 
 ### Re-syncing the research corpus
 
-`research-sync` is also idempotent — re-run it after pulling the latest notebooks:
+`research-sync` is also idempotent — re-run it after pulling the latest notebooks.
+
+> **Non-Docker only:** if you haven't cloned the repo yet, do that first:
+> ```bash
+> git clone https://github.com/vulncheck-oss/vulnerability-research research
+> ```
+> Docker users can skip this — `make docker-sync-research` clones automatically.
 
 ```bash
 cd research && git pull && cd ..
