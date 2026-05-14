@@ -99,7 +99,7 @@ func TestRateLimitMiddleware(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := rateLimitMiddleware(store, inner)
+	handler := rateLimitMiddleware(store, inner, silentLog())
 
 	ip := "1.2.3.4:9999"
 	// Drain the full burst (10 requests) — all should pass.

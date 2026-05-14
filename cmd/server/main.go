@@ -122,10 +122,11 @@ func (s *ipLimiterStore) cleanupLoop() {
 
 // rateLimitMiddleware rejects requests from IPs that exceed the rate limit.
 // Uses RemoteAddr directly; behind a trusted reverse proxy, swap for X-Real-IP.
-func rateLimitMiddleware(store *ipLimiterStore, next http.HandlerFunc) http.HandlerFunc {
+func rateLimitMiddleware(store *ipLimiterStore, next http.HandlerFunc, log *slog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip, _, _ := net.SplitHostPort(r.RemoteAddr)
 		if !store.get(ip).Allow() {
+			log.Warn("rate limit exceeded", "ip", ip)
 			http.Error(w, "rate limit exceeded — try again shortly", http.StatusTooManyRequests)
 			return
 		}
@@ -182,7 +183,7 @@ func main() {
 
 	store := newSessionStore()
 	limiter := newIPLimiterStore()
-	mux.HandleFunc("POST /api/chat", rateLimitMiddleware(limiter, chatHandler(db, *model, store, br, hasResearch, log)))
+	mux.HandleFunc("POST /api/chat", rateLimitMiddleware(limiter, chatHandler(db, *model, store, br, hasResearch, log), log))
 
 	srv := &http.Server{
 		Addr:              *addr,
